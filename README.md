@@ -34,10 +34,6 @@ Feed it a list of Google accounts. For each one, the bot will:
 
 A terminal UI launcher handles start / stop / status / live log viewing.
 
-> [!WARNING]
-> For educational and authorized testing use only. Automating account
-> creation or sign-in may violate OpenRouter's and Google's Terms of Service.
-> You are responsible for how you use this tool.
 
 ## Requirements
 
