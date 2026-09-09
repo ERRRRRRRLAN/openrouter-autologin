@@ -46,18 +46,21 @@ macOS/Linux work for the bot itself via `npm start`.
 
 ## Install
 
-### One-liner (curl)
-
-**macOS / Linux:**
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ERRRRRRRLAN/openrouter-autologin/main/install.sh | bash
-```
-
-**Windows (PowerShell):**
+### Windows (PowerShell)
 
 ```powershell
 irm https://raw.githubusercontent.com/ERRRRRRRLAN/openrouter-autologin/main/install.ps1 | iex
+```
+
+> [!IMPORTANT]
+> Run this in **PowerShell** — not `cmd`. The curl one-liner below is for
+> macOS/Linux only; in `cmd` it fails with a WSL error because `bash` is not
+> available there.
+
+### macOS / Linux (any terminal)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ERRRRRRRLAN/openrouter-autologin/main/install.sh | bash
 ```
 
 ### npm

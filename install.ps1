@@ -35,9 +35,9 @@ $env:npm_config_audit = "false"
 npm install --loglevel=error
 if ($LASTEXITCODE -ne 0) { Fail "npm install failed" }
 
-Info "All set. Next steps:"
+Info "All set. You are now in: $Dest"
 Write-Host ""
-Write-Host "  cd $Repo"
-Write-Host "  copy account.txt.example account.txt   # then add your accounts"
-Write-Host "  npm start                              # or: npm run launcher"
+Write-Host "  1. copy account.txt.example account.txt   # then add your accounts"
+Write-Host "  2. npm start                              # run the bot (or: npm run launcher)"
+Write-Host "  3. stop.bat                               # double-click to stop the bot anytime"
 Write-Host ""
