@@ -1,0 +1,5 @@
+# Format: email|password  (one account per line)
+# Gmail/Workspace accounts that will be used for OpenRouter signup/login.
+# Lines starting with # are ignored.
+# Example:
+# myemail@gmail.com|mypassword

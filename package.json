@@ -1,0 +1,37 @@
+{
+  "name": "openrouter-autologin",
+  "version": "1.0.0",
+  "description": "Automated OpenRouter API key harvester: Google OAuth login + key creation via puppeteer-extra stealth, with a terminal UI launcher.",
+  "main": "openrouter_bot.js",
+  "scripts": {
+    "start": "node openrouter_bot.js",
+    "bot": "node openrouter_bot.js",
+    "launcher": "node launcher.js"
+  },
+  "dependencies": {
+    "puppeteer": "^24.10.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "openrouter",
+    "api-keys",
+    "puppeteer",
+    "automation",
+    "oauth"
+  ],
+  "files": [
+    "openrouter_bot.js",
+    "launcher.js",
+    "stop.bat",
+    "stop.ps1",
+    "account.txt.example",
+    "install.sh",
+    "install.ps1",
+    "README.md",
+    "LICENSE"
+  ]
+}

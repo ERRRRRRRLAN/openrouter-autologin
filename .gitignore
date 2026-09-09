@@ -1,0 +1,12 @@
+node_modules/
+chrome_profiles/
+logs/
+api_keys.txt
+account.txt
+results.jsonl
+bot.pid
+*.log
+launcher.exe
+sea-prep.blob
+dist-repo/
+.DS_Store
