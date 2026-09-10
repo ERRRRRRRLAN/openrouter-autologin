@@ -159,8 +159,8 @@ openrouter-autologin/
 
 | Symptom | Fix |
 |---|---|
-| `Chrome tidak ditemukan` | Install Chrome, or set `CHROME_PATH=/path/to/chrome` |
-| `account.txt kosong` | Create it next to the bot, format `email\|password` |
+| `Chrome not found` | Install Chrome, or set `CHROME_PATH=/path/to/chrome` |
+| `account.txt is empty` | Create it next to the bot, format `email\|password` |
 | Google rejects login (500) | Too many attempts — let profiles cool down, retry later |
 | Key not saved | Check `logs/bot.log`; account likely flagged; rerun |
 | Stuck run | Double-click `stop.bat`, then rerun from the launcher |
