@@ -18,6 +18,7 @@ puppeteer.use(StealthPlugin());
 const CONFIG = {
   accountsFile: 'account.txt',
   apiKeysFile: 'api_keys.txt',
+  apiDir: 'api',
   homeUrl: 'https://openrouter.ai/',
   keysUrl: 'https://openrouter.ai/settings/keys',
   headless: process.env.HEADLESS === 'true',
@@ -112,12 +113,99 @@ function readAccounts() {
   return accounts;
 }
 
+/* ===================== SETTINGS + RUN STORAGE ===================== */
+
+function loadSettings() {
+  // settings.json {"keysPerAccount": 1..5}; env KEYS_PER_ACCOUNT overrides (testing).
+  let n = 1;
+  try {
+    if (fs.existsSync('settings.json')) {
+      const s = JSON.parse(fs.readFileSync('settings.json', 'utf8'));
+      if (Number.isInteger(s.keysPerAccount) && s.keysPerAccount >= 1 && s.keysPerAccount <= 5) n = s.keysPerAccount;
+    }
+  } catch (_) {}
+  if (process.env.KEYS_PER_ACCOUNT) {
+    const e = parseInt(process.env.KEYS_PER_ACCOUNT, 10);
+    if (Number.isInteger(e) && e >= 1 && e <= 5) n = e;
+  }
+  return { keysPerAccount: n };
+}
+
+const SETTINGS = loadSettings();
+const DELETE_ALL_MODE = process.env.BOT_MODE === 'DELETE_ALL';
+
+function fileStamp(d) {
+  const p = (x) => String(x).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+function ts(d) {
+  const t = fileStamp(d || new Date()); // 'YYYY-MM-DD_HH-MM-SS'
+  const [date, time] = t.split('_');
+  return `${date} ${time.split('-').join(':')}`; // 'YYYY-MM-DD HH:MM:SS'
+}
+
+let RUN_FILE = null;
+function runFile() {
+  if (!RUN_FILE) {
+    try { fs.mkdirSync(CONFIG.apiDir, { recursive: true }); } catch (_) {}
+    RUN_FILE = path.join(CONFIG.apiDir, (DELETE_ALL_MODE ? 'deleted_' : 'keys_') + fileStamp(new Date()) + '.txt');
+    const mode = DELETE_ALL_MODE ? 'delete-all' : 'generate';
+    fs.appendFileSync(RUN_FILE, `# run ${ts(new Date())} | mode=${mode} | keysPerAccount=${SETTINGS.keysPerAccount}\n`);
+  }
+  return RUN_FILE;
+}
+
+function appendRunRow(email, apiKey, k, n) {
+  // crash-safe: append immediately
+  try {
+    fs.appendFileSync(runFile(), `${ts(new Date())} | ${email} | ${apiKey} | ${k}/${n}\n`);
+  } catch (e) { log(email, 'ERROR', `Failed to write run file: ${e.message}`); }
+}
+
+function appendDeletedRow(email, count) {
+  try {
+    fs.appendFileSync(runFile(), `${ts(new Date())} | ${email} | deleted ${count} keys\n`);
+  } catch (e) { log(email, 'ERROR', `Failed to write delete log: ${e.message}`); }
+}
+
+// Remove every saved-key row for an email across api/keys_*.txt + legacy
+// api_keys.txt — called by DELETE_ALL after the server-side keys are gone,
+// so the next generate run does not skip the account for a dead key.
+function purgeSavedKeyRows(email) {
+  const em = String(email).toLowerCase();
+  const targets = [];
+  try { fs.mkdirSync(CONFIG.apiDir, { recursive: true }); } catch (_) {}
+  try {
+    for (const f of fs.readdirSync(CONFIG.apiDir)) {
+      if (f.startsWith('keys_') && f.endsWith('.txt')) targets.push(path.join(CONFIG.apiDir, f));
+    }
+  } catch (_) {}
+  targets.push(CONFIG.apiKeysFile);
+  let removed = 0;
+  for (const fp of targets) {
+    try {
+      const rows = fs.readFileSync(fp, 'utf8').split(/\r?\n/);
+      const kept = rows.filter((r) => {
+        const bare = r.trim();
+        if (!bare || bare.startsWith('#')) return true;
+        // row formats: legacy "email|key" (email at [0]) and new "ts | email | key | i/n" (email at [1])
+        const parts = bare.split('|').map((s) => s.trim());
+        const eml = parts.find((p) => p.includes('@')) || '';
+        return String(eml).toLowerCase() !== em;
+      });
+      if (kept.length !== rows.length) { removed += rows.length - kept.length; fs.writeFileSync(fp, kept.join('\n') + '\n'); }
+    } catch (_) {}
+  }
+  return removed;
+}
+
 function loadExistingEmails() {
   // Skip only if the account DEFINITELY succeeded:
   //  1) present in api_keys.txt (key saved), OR
   //  2) its last line in logs/results.jsonl has status ok=true.
   // FAIL does not skip -> retried on the next run (starting from the first line of account.txt).
   const existing = new Set();
+  // legacy api_keys.txt ('email|key')
   try {
     if (fs.existsSync(CONFIG.apiKeysFile)) {
       for (const raw of fs.readFileSync(CONFIG.apiKeysFile, 'utf8').split(/\r?\n/)) {
@@ -125,6 +213,18 @@ function loadExistingEmails() {
         if (!line || line.startsWith('#')) continue;
         const i = line.indexOf('|');
         if (i > 0) existing.add(line.slice(0, i).trim().toLowerCase());
+      }
+    }
+  } catch (_) {}
+  // api/keys_*.txt run rows ('ts | email | key | k/N')
+  try {
+    const files = fs.readdirSync(CONFIG.apiDir).filter((f) => /^keys_.*\.txt$/.test(f));
+    for (const f of files) {
+      for (const raw of fs.readFileSync(path.join(CONFIG.apiDir, f), 'utf8').split(/\r?\n/)) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#')) continue;
+        const parts = line.split('|').map((s) => s.trim());
+        if (parts.length >= 4 && /^sk-or-/.test(parts[2])) existing.add(parts[1].toLowerCase());
       }
     }
   } catch (_) {}
@@ -140,15 +240,17 @@ function recordResult(email, ok, stage, detail) {
   } catch (_) {}
 }
 
-function appendApiKey(email, apiKey) {
+function appendApiKey(email, apiKey, k, n) {
+  // per-run storage (api/keys_*.txt) — append immediately, crash-safe
+  appendRunRow(email, apiKey, k || 1, n || SETTINGS.keysPerAccount);
   try {
-    // replace the old row for the same email (re-run -> new key, no duplicates)
+    // legacy api_keys.txt kept in sync (same email replaces its old row)
     let rows = [];
     try { rows = fs.readFileSync(CONFIG.apiKeysFile, 'utf8').split(/\r?\n/).filter(Boolean); } catch (_) {}
     const kept = rows.filter((r) => r.split('|')[0].trim().toLowerCase() !== email.toLowerCase());
     kept.push(`${email}|${apiKey}`);
     fs.writeFileSync(CONFIG.apiKeysFile, kept.join('\n') + '\n');
-    log(email, 'SAVED', `API key saved to ${CONFIG.apiKeysFile}`);
+    log(email, 'SAVED', `API key saved (${k || 1}/${n || SETTINGS.keysPerAccount}) -> ${runFile()}`);
   } catch (e) { log(email, 'ERROR', `Failed to save API key: ${e.message}`); }
 }
 
@@ -1161,7 +1263,16 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
         break;
       }
       case 'BACK_TO_OPENROUTER': {
+        // The popup landed back on openrouter.ai — but often on the sign-in URL
+        // (?redirect_url=...) while the SPA finishes the redirect. Give it up to
+        // 12 s for the URL to settle somewhere that is NOT the sign-in page;
+        // if it stays stuck, the OAuth still succeeded (cookie is set).
         log(account.email, 'OAUTH', 'URL returned to openrouter.ai — OAuth finished');
+        for (let w = 0; w < 12; w++) {
+          const u = oauthPage.url().toLowerCase();
+          if (u.includes('/sign-in')) { await sleep(1000); continue; }
+          break;
+        }
         return { ok: true, detail: 'returned to openrouter.ai' };
       }
       case 'LOADING_INTERSTITIAL': {
@@ -1390,6 +1501,8 @@ async function runOrStateMachineOnly(page, email, account) {
   let onboardingRounds = 0;
   let authSignInRetries = 0; // budget: max 2 Google sign-in clicks (password rejected -> fail fast)
   let apiKeyResult = null;
+  let keysObtained = 0; // keys read+saved in THIS run (multi-key mode)
+  const keysWanted = SETTINGS.keysPerAccount;
   while (orSteps < CONFIG.maxStateMachineSteps) {
       orSteps++;
       // wait for the spinner/loading to disappear (max 8s) before classify — avoid a wrong state during transitions
@@ -1653,7 +1766,7 @@ async function runOrStateMachineOnly(page, email, account) {
               break;
             }
           }
-          if (apiKeyResult) return { ok: true, stage: 'DONE', detail: 'key already obtained', apiKey: apiKeyResult.key };
+          if (apiKeyResult && keysObtained >= keysWanted) return { ok: true, stage: 'DONE', detail: `${keysObtained} keys via ${apiKeyResult.source}` };
           if (keyCreated && orRepeats >= 4) {
             // key created but not yet read (the "Your new key" modal didn't appear)
             await captureArtifacts(page, email, 'OR_KEY_READ_FAIL');
@@ -1661,6 +1774,16 @@ async function runOrStateMachineOnly(page, email, account) {
           }
           if (keyCreated) await sleep(400); // give the "Your new key" modal time to render
           if (!keyCreated) {
+            if (keysObtained > 0 && keysObtained < keysWanted) {
+              // multi-key mode: a key of THIS run is on the page -> do NOT delete, create the next
+              log(email, 'OR:KEYS', `next key: ${keysObtained + 1}/${keysWanted}`);
+              const createdNext = await orClickCreateKey(page);
+              if (createdNext === 'VERIFY_EMAIL_REQUIRED') {
+                return { ok: false, stage: 'EMAIL_VERIFY_REQUIRED', detail: 'OpenRouter requires email verification to create a key' };
+              }
+              if (createdNext) { keyCreated = true; await sleep(900); } else { await sleep(800); }
+              break;
+            }
             // ==== NEW EDGE CASE: API KEY ALREADY EXISTS -> DELETE ALL -> CREATE NEW ====
             // Check the PAGE (not api_keys.txt), so it still works even if the txt is empty.
             await orWaitKeysReady(page);
@@ -1705,9 +1828,15 @@ async function runOrStateMachineOnly(page, email, account) {
             const read = await orReadKeyFromDom(page);
             if (read) {
               apiKeyResult = read;
+              keysObtained++;
               log(email, 'OR:KEYS', `key read (${read.source}): ${read.key.slice(0, 14)}...`);
-              appendApiKey(email, read.key);
-              return { ok: true, stage: 'DONE', detail: `key via ${read.source}`, apiKey: read };
+              appendApiKey(email, read.key, keysObtained, keysWanted);
+              if (keysObtained >= keysWanted) {
+                return { ok: true, stage: 'DONE', detail: `${keysObtained} keys via ${read.source}` };
+              }
+              keyCreated = false;
+              await sleep(500);
+              break;
             }
             // try clicking the copy icon then read the clipboard
             const copyClicked = await orClickCopyKeyIcon(page);
@@ -1716,9 +1845,15 @@ async function runOrStateMachineOnly(page, email, account) {
             const read2 = await orReadKeyFromDom(page);
             if (read2) {
               apiKeyResult = read2;
+              keysObtained++;
               log(email, 'OR:KEYS', `key read (${read2.source}): ${read2.key.slice(0, 14)}...`);
-              appendApiKey(email, read2.key);
-              return { ok: true, stage: 'DONE', detail: `key via ${read2.source}`, apiKey: read2 };
+              appendApiKey(email, read2.key, keysObtained, keysWanted);
+              if (keysObtained >= keysWanted) {
+                return { ok: true, stage: 'DONE', detail: `${keysObtained} keys via ${read2.source}` };
+              }
+              keyCreated = false;
+              await sleep(500);
+              break;
             }
             if (orRepeats >= 3) {
               await captureArtifacts(page, email, 'OR_KEY_READ_FAIL');
@@ -1880,6 +2015,256 @@ async function hasTurnstile(page) {
     });
     return vis || false;
   } catch (_) { return false; }
+}
+
+async function processDeleteAll(account, idx, total) {
+  // DELETE_ALL mode: log in (existing session/OAuth), open the keys page,
+  // delete every key, create NOTHING, record a row in api/deleted_*.txt.
+  const email = account.email;
+  log(email, 'START', `account ${idx + 1}/${total} (delete-all)`);
+  const profileDir = path.join('chrome_profiles', safeName(email));
+  try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
+  const launchOpts = {
+    headless: CONFIG.headless,
+    args: [...LAUNCH_ARGS],
+    defaultViewport: null,
+    userDataDir: profileDir,
+    protocolTimeout: 20000,
+  };
+  const exe = resolveChromeExecutable();
+  if (exe) launchOpts.executablePath = exe;
+  else launchOpts.channel = 'chrome';
+  const browser = await puppeteer.launch(launchOpts);
+  let page = null;
+  try {
+    const context = browser.defaultBrowserContext();
+    try {
+      await context.overridePermissions('https://openrouter.ai', ['clipboard-read', 'clipboard-write']);
+    } catch (_) {}
+    const pages = await browser.pages();
+    page = pages.length ? pages[0] : await context.newPage();
+    try {
+      const cur = await page.evaluate(() => navigator.userAgent);
+      if (/HeadlessChrome/i.test(cur)) {
+        const fixed = cur.replace(/HeadlessChrome/, 'Chrome');
+        await page.setUserAgent(fixed);
+      }
+    } catch (_) {}
+    await page.goto('https://openrouter.ai/', { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
+    // reuse the FULL existing pipeline: if login is needed the OAuth flow runs,
+    // then the OR state machine lands on the keys page. processAccount does exactly this;
+    // we intercept by running the state machine with a DELETE_ONLY marker.
+    const loginDone = await ensureLoggedInAndOnKeys(page, account);
+    if (!loginDone.ok) return loginDone;
+    // delete loop: repeat until orDetectExistingKeys reports zero (max 6 passes)
+    let removed = 0;
+    for (let pass = 0; pass < 6; pass++) {
+      await orWaitKeysReady(page);
+      const det = await orDetectExistingKeys(page);
+      const count = det && !det.noKeys ? (det.maskedCount || 0) : 0;
+      if (pass === 0) removed = count;
+      if (!count) break;
+      await orDeleteAllKeysOnPage(page, email);
+      await sleep(900);
+    }
+    const detEnd = await orDetectExistingKeys(page);
+    const left = detEnd && !detEnd.noKeys ? (detEnd.maskedCount || 0) : 0;
+    appendDeletedRow(email, removed);
+    const purged = purgeSavedKeyRows(email);
+    if (purged) log(email, 'DELETE', `purged ${purged} dead key rows from local api/ files`);
+    log(email, 'DELETE', `deleted ${removed} keys (${left} remaining)`);
+    return { ok: true, stage: 'DONE', detail: `deleted ${removed} keys`, removed };
+  } catch (err) {
+    if (page) await captureArtifacts(page, email, 'FATAL_DELETE').catch(() => {});
+    return { ok: false, stage: 'FATAL', detail: err.message || String(err) };
+  } finally {
+    try { await browser.close(); } catch (_) {}
+  }
+}
+
+async function ensureLoggedInAndOnKeys(page, account) {
+  // Minimal login bridge: reuse STEP1.5-style pre-classification. If not logged in,
+  // run the same OAuth flow as processAccount via runOrStateMachineOnly's sign-in states.
+  const email = account.email;
+  for (let round = 0; round < 40; round++) {
+    const st = await classifyOpenRouter(page).catch(() => null);
+    if (st === 'OR_KEYS_PAGE') return { ok: true };
+    if (st === 'OR_ONBOARDING_QUESTIONS' || st === 'OR_WIZARD_KEY_STEP' || st === 'OR_WIZARD_PAYMENT_STEP') {
+      // click through onboarding until the keys page (reuse handlers via state machine below)
+    }
+    if (st === 'OR_AUTH_PAGE' || st === 'OR_AUTH_PAGE_NO_GOOGLE') {
+      const g = await orClickGoogleButton(page).catch(() => null);
+      if (!g) { await sleep(700); continue; }
+      // Wait for the OAuth surface to actually appear: a popup on accounts.google
+      // OR the main tab navigating there. Running the machine on a page still
+      // sitting on the sign-in URL instantly "finishes" (false BACK_TO_OPENROUTER)
+      // and the whole bridge loops forever.
+      let target = null;
+      for (let w = 0; w < 12 && !target; w++) {
+        target = await findOauthPopup(page.browser(), page).catch(() => null);
+        if (!target) {
+          try { if (page.url().includes('accounts.google')) target = page; } catch (_) {}
+        }
+        if (!target) await sleep(600);
+      }
+      if (!target) {
+        log(email, 'LOGIN', 'OAuth popup did not open after clicking Google — retry');
+        await sleep(900);
+        continue;
+      }
+      const res = await runGoogleOauthStateMachine(target, account, Date.now() + 120000);
+      if (!res.ok) return { ok: false, stage: 'OAUTH', detail: res.detail };
+      await sleep(1500);
+      // After a successful OAuth the SPA often sits on the sign-in URL without
+      // auto-redirecting, and re-classifying still shows the sign-in page -> the
+      // loop would run OAuth again forever. Always navigate straight to the keys
+      // page (the session cookie is already set) and let the loop re-verify.
+      log(email, 'LOGIN', 'post-OAuth: navigating straight to the keys page');
+      await page.goto(CONFIG.keysUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
+      await sleep(1200);
+      continue;
+    }
+    // any other state (OR_HOME, OR_UNKNOWN, ONBOARDING...): run a bounded OR state
+    // machine pass that only advances login/onboarding, stopping at the keys page.
+    if (st === 'OR_HOME') {
+      const c = await page.evaluate(() => {
+        const els = Array.from(document.querySelectorAll('a, button'));
+        for (const el of els) {
+          const t = (el.innerText || '').trim().toLowerCase();
+          if (t === 'get api key' || t.includes('keys')) { el.click(); return t; }
+        }
+        return null;
+      }).catch(() => null);
+      if (c) log(email, 'LOGIN', `click "${c}"`);
+    } else if (st === 'OR_ONBOARDING_QUESTIONS') {
+      await orHandleOnboarding(page, email);
+      await orClickOnboardingNext(page);
+    } else if (st === 'OR_WIZARD_KEY_STEP') {
+      const nx = await clickByText(page, ['continue', 'next', "i'll do this later"]);
+      if (nx) log(email, 'LOGIN', `wizard "${nx}"`);
+    } else if (st === 'OR_WIZARD_PAYMENT_STEP') {
+      const nx = await clickByText(page, ["i'll do this later", 'skip', 'continue', 'next']);
+      if (nx) log(email, 'LOGIN', `wizard "${nx}"`);
+    }
+    await sleep(900);
+    // navigation may have landed us on the keys page URL
+    try { if (/\/keys\/?$/.test(new URL(page.url()).pathname)) return { ok: true }; } catch (_) {}
+  }
+  return { ok: false, stage: 'LOGIN', detail: 'Could not reach the keys page in delete mode' };
+}
+
+async function findOauthPopup(browser, mainPage) {
+  const pages = await browser.pages().catch(() => []);
+  for (const p of pages) {
+    try {
+      const u = p.url();
+      if (u.includes('accounts.google')) return p;
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function orDeleteAllKeysOnPage(page, email) {
+  // Reuse the battle-tested delete flow from the OR_KEYS_PAGE handler (select-all,
+  // bulk Delete + confirm modal, row-actions fallback) as a standalone pass.
+  const done = await page
+    .evaluate(async () => {
+      const vis = (el) => {
+        if (!el) return false;
+        const r = el.getBoundingClientRect();
+        const s = window.getComputedStyle(el);
+        return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
+      };
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+      // NEW keys UI (2026-09-10): no bulk-delete toolbar. Per row: a three-dot
+      // menu containing Delete. Strategy per row: open the row menu, click the
+      // Delete item (dropdown), confirm the modal. Legacy toolbar flow kept as fallback.
+      const rows = Array.from(document.querySelectorAll('tr, [role="row"]')).filter((r) => {
+        const t = (r.innerText || '');
+        return /sk-or-v1-/i.test(t) && !/no api keys|create and manage/i.test(t);
+      });
+      let n = 0;
+      if (rows.length) {
+        for (const row of rows) {
+          const btns = Array.from(row.querySelectorAll('button, [role="button"]'));
+          let menuBtn = null;
+          for (const b of btns) {
+            const al = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || '')).toLowerCase();
+            const box = b.getBoundingClientRect();
+            const small = box.width > 0 && box.width <= 60;
+            if (/more|actions|ellipsis|kebab|menu/.test(al) && small && vis(b)) { menuBtn = b; break; }
+          }
+          if (!menuBtn) {
+            const iconOnly = btns.filter((b) => {
+              const t = (b.innerText || '').trim();
+              const box = b.getBoundingClientRect();
+              return !t && box.width > 0 && box.width <= 60 && vis(b);
+            });
+            if (iconOnly.length) menuBtn = iconOnly[iconOnly.length - 1];
+          }
+          if (menuBtn) {
+            try { menuBtn.click(); } catch (_) {}
+            await sleep(600);
+            const items = Array.from(document.querySelectorAll('[role="menuitem"], [role="menu"] *, li, button, a'));
+            let delItem = null;
+            for (const it of items) {
+              const t = (it.innerText || '').trim().toLowerCase();
+              const box = it.getBoundingClientRect();
+              if (t === 'delete' && box.width > 0 && vis(it)) { delItem = it; break; }
+            }
+            if (delItem) {
+              try { delItem.click(); } catch (_) {}
+              await sleep(700);
+              const modalBtns = Array.from(document.querySelectorAll('button'));
+              for (const b of modalBtns) {
+                const t = (b.innerText || '').trim().toLowerCase();
+                if ((t === 'delete' || t === 'confirm' || t === 'yes, delete' || t === 'yes') && vis(b) && !b.disabled) { try { b.click(); } catch (_) {} break; }
+              }
+              await sleep(900);
+              n++;
+            }
+          }
+        }
+        if (n > 0) return 'rows-menu:' + n;
+      }
+      // LEGACY UI fallback: select-all then toolbar Delete
+      let selected = false;
+      const boxes = Array.from(document.querySelectorAll('input[type="checkbox"]'));
+      for (const cb of boxes) {
+        if (!vis(cb)) continue;
+        const checked = cb.checked || cb.getAttribute('aria-checked') === 'true';
+        if (!checked) { try { cb.click(); } catch (_) {} }
+        selected = true;
+        break;
+      }
+      await sleep(300);
+      const btns = Array.from(document.querySelectorAll('button'));
+      let clicked = null;
+      for (const b of btns) {
+        const t = (b.innerText || '').trim().toLowerCase();
+        if ((t === 'delete' || t === 'delete key' || t === 'delete keys') && vis(b) && !b.disabled) { b.click(); clicked = t; break; }
+      }
+      await sleep(500);
+      if (clicked) {
+        const modalBtns = Array.from(document.querySelectorAll('button'));
+        for (const b of modalBtns) {
+          const t = (b.innerText || '').trim().toLowerCase();
+          if ((t === 'delete' || t === 'confirm' || t === 'yes') && vis(b) && !b.disabled) { b.click(); break; }
+        }
+      } else {
+      const rowBtns = Array.from(document.querySelectorAll('button[aria-label*="delete" i], button'));
+      let m = 0;
+      for (const b of rowBtns) {
+        const label = ((b.getAttribute('aria-label') || '') + ' ' + (b.innerText || '')).trim().toLowerCase();
+        if (label.includes('delete') && vis(b) && !b.disabled) { try { b.click(); await sleep(400); m++; } catch (_) {} }
+      }
+      clicked = m > 0 ? 'rows:' + m : null;
+      }
+      return clicked;
+    })
+    .catch(() => null);
+  log(email, 'DELETE', `delete pass: ${done}`);
+  return done;
 }
 
 async function processAccount(account, idx, total) {
@@ -2154,10 +2539,10 @@ process.on('uncaughtException', (e) => {
     log('MAIN', 'FATAL', 'account.txt is empty. Format: email|password per line.');
     process.exit(1);
   }
-  const done = loadExistingEmails();
-  let accounts = all.filter((a) => !done.has(a.email.toLowerCase()));
+  const done = DELETE_ALL_MODE ? new Set() : loadExistingEmails();
+  let accounts = DELETE_ALL_MODE ? all.slice() : all.filter((a) => !done.has(a.email.toLowerCase()));
   if (!accounts.length) {
-    log('MAIN', 'INFO', 'All accounts already have an API key.');
+    log('MAIN', 'INFO', DELETE_ALL_MODE ? 'No accounts to process.' : 'All accounts already have an API key.');
     process.exit(0);
   }
   if (process.env.MAX_ACCOUNTS) {
@@ -2165,11 +2550,17 @@ process.on('uncaughtException', (e) => {
     if (n > 0 && n < accounts.length) accounts = accounts.slice(0, n);
   }
   log('MAIN', 'INFO', `${accounts.length}/${all.length} accounts to be processed`);
+  if (DELETE_ALL_MODE) log('MAIN', 'INFO', `mode=DELETE_ALL: deleting ALL keys on every account (no keys will be created)`);
+  log('MAIN', 'INFO', `storage: ${CONFIG.apiDir}/ run files | keysPerAccount=${SETTINGS.keysPerAccount}`);
 
   let success = 0;
   let fail = 0;
+  let removedTotal = 0;
   for (let i = 0; i < accounts.length; i++) {
-    const res = await processAccount(accounts[i], i, accounts.length);
+    const res = DELETE_ALL_MODE
+      ? await processDeleteAll(accounts[i], i, accounts.length)
+      : await processAccount(accounts[i], i, accounts.length);
+    if (res.ok && res.removed !== undefined) removedTotal += res.removed || 0;
     if (res.ok) {
       success++;
       log('MAIN', 'SUCCESS', `${accounts[i].email}: ${res.detail}`);
@@ -2181,7 +2572,12 @@ process.on('uncaughtException', (e) => {
     }
     if (i < accounts.length - 1) await sleep(rand(...CONFIG.interAccountDelayMs));
   }
+  if (DELETE_ALL_MODE) {
+    log('MAIN', 'SUMMARY', `delete-all done: ${success} accounts, ${removedTotal} keys removed, ${fail} failed`);
+    log('MAIN', 'INFO', `delete log: ${runFile()}`);
+  } else {
   log('MAIN', 'SUMMARY', `done: ${success} succeeded, ${fail} failed of ${accounts.length} accounts`);
+  }
   process.exit(0);
 })().catch((e) => {
   log('MAIN', 'FATAL', e && e.message ? e.message : String(e));

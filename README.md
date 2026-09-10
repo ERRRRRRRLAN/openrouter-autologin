@@ -94,6 +94,12 @@ Build it yourself at any time:
 npm run build:exe
 ```
 
+## Features
+
+- **Multiple keys per account** (1-5) — set via launcher `Settings` (menu 5) or `KEYS_PER_ACCOUNT` env var
+- **Per-run key storage** — each run writes `api/keys_<date>_<time>.txt` with a timestamped row format (`time | email | key | n/total`), so generating today and tomorrow never mixes files
+- **Delete ALL API keys** (launcher menu 7) — sweeps every key on openrouter.ai for all accounts, keeps local files, logs to `api/deleted_<timestamp>.txt`, and purges dead key rows so the next run regenerates cleanly
+
 ## Usage
 
 1. Add your accounts to `account.txt` (copy from `account.txt.example`):
