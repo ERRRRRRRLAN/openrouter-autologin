@@ -77,6 +77,23 @@ cd openrouter-autologin
 npm install
 ```
 
+### Prebuilt launcher.exe (Windows)
+
+Instead of running the launcher with Node, grab the compiled launcher:
+
+1. Download `launcher.exe` from [Releases](https://github.com/ERRRRRRRLAN/openrouter-autologin/releases)
+2. Put it in the project folder (next to `openrouter_bot.js`)
+3. Double-click it
+
+Requirements are the same: Node.js and Chrome must be installed — the launcher
+spawns the bot with Node, so the exe only replaces the launcher UI itself.
+
+Build it yourself at any time:
+
+```bash
+npm run build:exe
+```
+
 ### Build the .exe launcher (optional, Windows)
 
 ```bash

@@ -1,9 +1,9 @@
 'use strict';
-/* OpenRouter Auto-Key Bot - Launcher TUI (v2 - responsif)
- * Fix berat: status dipoll ASYNC (bukan sync per keypress); render pakai
- * scroll-region ANSI (tanpa clear penuh -> tanpa flicker); keypress instan.
+/* OpenRouter Auto-Key Bot - Launcher TUI (v2 - responsive)
+ * Major fix: status is polled ASYNC (not sync per keypress); render uses
+ * an ANSI scroll-region (no full clear -> no flicker); instant keypress.
  * CLI: --status --bg --fg --stop --reset-profiles
- * Harus berada di folder yang sama dengan openrouter_bot.js.
+ * Must live in the same folder as openrouter_bot.js.
  */
 const fs = require('fs');
 const path = require('path');
@@ -38,9 +38,9 @@ function resolveNode() {
 }
 const NODE_EXE = resolveNode();
 
-/* ---------- helper sistem (semua CEPAT) ---------- */
+/* ---------- system helpers (all FAST) ---------- */
 
-// Cari pid bot via file pid dulu (instan), baru tasklist fallback (~150ms)
+// Find the bot pid via the pid file first (instant), then tasklist fallback (~150ms)
 function findBotPids() {
   const pids = [];
   try {
@@ -48,7 +48,7 @@ function findBotPids() {
     if (Number.isFinite(s) && s > 0) pids.push(s);
   } catch (_) {}
   if (pids.length) {
-    // verifikasi hidup via tasklist (satu kali, cepat)
+    // verify it is alive via tasklist (once, fast)
     const r = cp.spawnSync('tasklist', ['/FI', `PID eq ${pids[0]}`, '/FO', 'CSV', '/NH'], { encoding: 'utf8', windowsHide: true });
     const alive = (r.stdout || '').includes('"' + pids[0] + '"');
     return alive ? pids : [];
@@ -79,18 +79,18 @@ function stopBot() {
 }
 
 function runBackground() {
-  // Guard anti bot dobel: cek pid file DAN proses node yang menjalankan openrouter_bot.js
+  // Double-bot guard: check the pid file AND node processes running openrouter_bot.js
   const existing = findBotPids();
-  if (existing.length) return { ok: false, msg: 'Bot sudah jalan (pid ' + existing.join(', ') + ')' };
+  if (existing.length) return { ok: false, msg: 'Bot already running (pid ' + existing.join(', ') + ')' };
   try {
     const out = cp.spawnSync('powershell', ['-NoProfile', '-Command',
       "(Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -like '*openrouter_bot.js*' }).Count"],
       { encoding: 'utf8', windowsHide: true });
     const cnt = parseInt((out.stdout || '0').trim(), 10);
-    if (cnt > 0) return { ok: false, msg: 'Bot sudah jalan di mode foreground (' + cnt + ' proses) - cek window lain / Stop Bot dulu' };
+    if (cnt > 0) return { ok: false, msg: 'Bot already running in foreground mode (' + cnt + ' processes) - check another window / use Stop Bot first' };
   } catch (_) {}
-  if (!fs.existsSync(F.bot)) return { ok: false, msg: 'openrouter_bot.js tidak ditemukan di folder ini' };
-  // BACKGROUND = HEADLESS: chrome bot tidak muncul (UA disamarkan headful oleh bot).
+  if (!fs.existsSync(F.bot)) return { ok: false, msg: 'openrouter_bot.js not found in this folder' };
+  // BACKGROUND = HEADLESS: the bot chrome never shows up (its UA is disguised as headful by the bot).
   const env = Object.assign({}, process.env, { HEADLESS: 'true' });
   const child = cp.spawn(NODE_EXE, [F.bot], {
     cwd: BOT_DIR, detached: true, stdio: 'ignore', windowsHide: true, env,
@@ -100,7 +100,7 @@ function runBackground() {
   return { ok: true, pid: child.pid };
 }
 
-/* ---------- status (async, di-cache; TIDAK dipanggil saat render) ---------- */
+/* ---------- status (async, cached; NOT called during render) ---------- */
 
 const STAT = { pids: [], accounts: 0, pending: 0, keys: 0, profiles: 0, line: '', tail: [] };
 
@@ -129,7 +129,7 @@ async function refreshStat() {
       try { return fs.statSync(path.join(F.profiles, d)).isDirectory(); } catch (_) { return false; }
     }).length;
   } catch (_) { STAT.profiles = 0; }
-  // ekor log bot (multi-baris utk live view di menu) — baca maks 8KB
+  // bot log tail (multi-line, for the live view in the menu) — read at most 8KB
   try {
     const fd = fs.openSync(F.log, 'r');
     const size = fs.fstatSync(fd).size;
@@ -152,38 +152,38 @@ async function refreshStat() {
 /* ---------- UI ---------- */
 
 const MENU = [
-  { id: 'bg',    label: 'Run Bot - Mode BACKGROUND',  desc: 'bot jalan tersembunyi, log di logs\\bot.log' },
-  { id: 'fg',    label: 'Run Bot - Mode FOREGROUND',  desc: 'log bot tampil langsung di sini (Ctrl+C stop)' },
-  { id: 'stop',  label: 'Stop Bot',                  desc: 'hentikan bot + chrome bot (aman dipakai kapan saja)' },
-  { id: 'edit',  label: 'Edit account.txt',          desc: 'buka notepad; setelah disimpan tekan apa pun' },
-  { id: 'keys',  label: 'Lihat api_keys.txt',         desc: 'daftar akun + API key yang sudah tersimpan' },
-  { id: 'reset', label: 'Reset Chrome Profiles',     desc: 'hapus semua profil chrome (login ulang semua akun)' },
-  { id: 'quit',  label: 'Keluar',                    desc: 'tutup launcher' },
+  { id: 'bg',    label: 'Run Bot - Mode BACKGROUND',  desc: 'runs hidden, log at logs\\bot.log' },
+  { id: 'fg',    label: 'Run Bot - Mode FOREGROUND',  desc: 'bot log streams right here (Ctrl+C to stop)' },
+  { id: 'stop',  label: 'Stop Bot',                  desc: 'stop bot + bot chrome (safe anytime)' },
+  { id: 'edit',  label: 'Edit account.txt',          desc: 'open notepad; press any key after saving' },
+  { id: 'keys',  label: 'View api_keys.txt',         desc: 'list of accounts + saved API keys' },
+  { id: 'reset', label: 'Reset Chrome Profiles',     desc: 'delete all chrome profiles (accounts must log in again)' },
+  { id: 'quit',  label: 'Exit',                    desc: 'close the launcher' },
 ];
 let sel = 0;
 let mode = 'menu';
 let confirmHandler = null;
-let lastLines = 0; // jumlah baris terakhir yang dirender (untuk redraw bersih)
+let lastLines = 0; // number of lines rendered last (for a clean redraw)
 const W = 78;
 
 function line(ch) { return (ch || '-').repeat(W); }
 function center(s) { const pad = Math.max(0, W - 2 - s.length); const l = Math.floor(pad / 2); return ' '.repeat(l) + s + ' '.repeat(pad - l) + '|'; }
 function padTo(s, n) { s = String(s); return s + ' '.repeat(Math.max(0, n - s.length)); }
 
-// render: ANSI "move to top + clear each line" — tanpa clear layar penuh, tanpa flicker
-// BUG HEADER DOBEL: versi lama join SEMUA elemen dengan '\n' — kode kursor (\x1b[?25l,
-// \x1b[NF) ikut kena newline, tiap render geser ~2 baris ke bawah, header lama tersisa.
-// Fix: newline HANYA antar baris konten (\r\n), kursor selalu berakhir di awal baris
-// SETELAH frame -> lastLines = rows.length (tanpa +1).
+// render: ANSI "move to top + clear each line" — no full screen clear, no flicker
+// DOUBLE HEADER BUG: the old version joined ALL elements with '\n' — cursor codes (\x1b[?25l,
+// \x1b[NF) picked up newlines too, each render shifted ~2 lines down, stale headers remained.
+// Fix: newline ONLY between content lines (\r\n), the cursor always ends at line start
+// AFTER the frame -> lastLines = rows.length (no +1).
 function writeScreen(lines) {
   const rows = [];
-  for (const l of lines) rows.push('\x1b[2K' + l);            // clear line + tulis
-  const extra = lastLines - lines.length;                     // hapus baris sisa render lama
+  for (const l of lines) rows.push('\x1b[2K' + l);            // clear line + write
+  const extra = lastLines - lines.length;                     // erase leftover lines from the previous render
   if (extra > 0) for (let i = 0; i < extra; i++) rows.push('\x1b[2K');
-  let pre = lastLines === 0 ? '\x1b[2J\x1b[H' : '\x1b[' + lastLines + 'F'; // clear penuh di awal / naik ke baris teratas render lama
-  pre += '\x1b[?25l';                                        // sembunyikan kursor saat render
+  let pre = lastLines === 0 ? '\x1b[2J\x1b[H' : '\x1b[' + lastLines + 'F'; // full clear at start / move up to the top line of the previous render
+  pre += '\x1b[?25l';                                        // hide the cursor while rendering
   process.stdout.write(pre + rows.join('\r\n') + '\r\n\x1b[?25h');
-  // kursor berakhir tepat di awal baris SETELAH frame = rows.length
+  // the cursor ends exactly at the start of the line AFTER the frame = rows.length
   lastLines = rows.length;
 }
 
@@ -195,13 +195,13 @@ function menuLines() {
   L.push(C.B + C.CYN + '|' + center('OPENROUTER BOT - AUTO API KEY') + C.R);
   L.push(C.B + C.CYN + '|' + C.DIM + center(BOT_DIR.slice(0, W - 4)) + C.R);
   L.push(C.CYN + line('=') + C.R);
-  L.push('  Status : ' + (running ? C.GRN + C.B + 'BOT RUNNING (BACKGROUND)' + C.R + C.DIM + '  pid ' + st.pids.join(', ') + C.R : C.DIM + 'MENGANGGUR' + C.R));
-  L.push('  Akun   : ' + st.accounts + ' total, ' + (st.pending > 0 ? C.YEL + st.pending + ' belum diproses' + C.R : C.GRN + 'semua selesai' + C.R));
-  L.push('  Key    : ' + st.keys + ' tersimpan');
-  L.push('  Profil : ' + st.profiles + ' chrome');
+  L.push('  Status   : ' + (running ? C.GRN + C.B + 'BOT RUNNING (BACKGROUND)' + C.R + C.DIM + '  pid ' + st.pids.join(', ') + C.R : C.DIM + 'IDLE' + C.R));
+  L.push('  Accounts : ' + st.accounts + ' total, ' + (st.pending > 0 ? C.YEL + st.pending + ' pending' + C.R : C.GRN + 'all done' + C.R));
+  L.push('  Keys     : ' + st.keys + ' saved');
+  L.push('  Profiles : ' + st.profiles + ' chrome');
   if (running && st.tail && st.tail.length) {
     L.push(C.DIM + line('-') + C.R);
-    L.push(C.B + '  LOG BOT (live):' + C.R);
+    L.push(C.B + '  BOT LOG (live):' + C.R);
     for (const t of st.tail) L.push(C.DIM + '  ' + t.slice(0, 72) + C.R);
   }
   L.push(C.DIM + line('-') + C.R);
@@ -214,7 +214,7 @@ function menuLines() {
     if (active && m.desc) L.push('      ' + C.DIM + m.desc + C.R);
   });
   L.push(C.DIM + line('-') + C.R);
-  L.push('  [' + C.B + 'Up/Down' + C.R + '] pilih   [' + C.B + 'Enter' + C.R + '] jalankan   [' + C.B + '1-7' + C.R + '] cepat   [' + C.B + 'Q' + C.R + '] keluar');
+  L.push('  [' + C.B + 'Up/Down' + C.R + '] select   [' + C.B + 'Enter' + C.R + '] run   [' + C.B + '1-7' + C.R + '] quick   [' + C.B + 'Q' + C.R + '] quit');
   L.push(C.CYN + line('=') + C.R);
   return L;
 }
@@ -231,7 +231,7 @@ function showResult(title, ok, lines) {
   L.push(C.B + (ok ? C.GRN : C.RED) + line('=') + C.R);
   for (const l of lines) L.push('  ' + l);
   L.push('');
-  L.push(C.DIM + '  [tekan tombol apa pun untuk kembali ke menu]' + C.R);
+  L.push(C.DIM + '  [press any key to return to the menu]' + C.R);
   writeScreen(L);
   mode = 'result';
 }
@@ -242,18 +242,18 @@ function showKeysScreen() {
   const L = [];
   L.push('');
   L.push(C.B + C.CYN + line('=') + C.R);
-  L.push(C.B + C.CYN + '|' + center('API KEYS (' + rows.length + ' akun)') + C.R);
+  L.push(C.B + C.CYN + '|' + center('API KEYS (' + rows.length + ' accounts)') + C.R);
   L.push(C.B + C.CYN + line('=') + C.R);
-  if (!rows.length) L.push('  ' + C.DIM + '(api_keys.txt kosong / belum ada)' + C.R);
+  if (!rows.length) L.push('  ' + C.DIM + '(api_keys.txt empty / not created yet)' + C.R);
   rows.slice(0, 40).forEach((r) => {
     const i = r.indexOf('|');
     const email = i > 0 ? r.slice(0, i) : '(?)';
     const key = i > 0 ? r.slice(i + 1) : '';
     L.push('  ' + C.B + padTo(email, 28) + C.R + C.YEL + key + C.R);
   });
-  if (rows.length > 40) L.push('  ' + C.DIM + '... dan ' + (rows.length - 40) + ' lagi (buka file untuk semua)' + C.R);
+  if (rows.length > 40) L.push('  ' + C.DIM + '... and ' + (rows.length - 40) + ' more (open the file for all)' + C.R);
   L.push('');
-  L.push(C.DIM + '  [tekan tombol apa pun untuk kembali ke menu]   file: ' + F.keys + C.R);
+  L.push(C.DIM + '  [press any key to return to the menu]   file: ' + F.keys + C.R);
   writeScreen(L);
   mode = 'result';
 }
@@ -266,7 +266,7 @@ function askConfirm(title, lines) {
   L.push(C.B + C.YEL + line('=') + C.R);
   for (const l of lines) L.push('  ' + l);
   L.push('');
-  L.push('  ' + C.B + 'Y' + C.R + ' = lanjut   ' + C.B + 'N' + C.R + ' / Esc = batal');
+  L.push('  ' + C.B + 'Y' + C.R + ' = continue   ' + C.B + 'N' + C.R + ' / Esc = cancel');
   L.push('');
   writeScreen(L);
   mode = 'confirm';
@@ -274,7 +274,7 @@ function askConfirm(title, lines) {
 
 function backToMenu() { mode = 'menu'; sel = Math.min(sel, MENU.length - 1); drawFullClear(); }
 
-/* ---------- aksi menu ---------- */
+/* ---------- menu actions ---------- */
 
 function activate(id) {
   if (id === 'fg') {
@@ -283,27 +283,27 @@ function activate(id) {
     const r = runBackground();
     if (r.ok) {
       refreshStat();
-      showResult('BOT JALAN (BACKGROUND)', true, [
-        C.GRN + 'Bot berjalan dengan pid ' + r.pid + C.R,
+      showResult('BOT STARTED (BACKGROUND)', true, [
+        C.GRN + 'Bot running with pid ' + r.pid + C.R,
         'Log    : ' + F.log,
         C.DIM + 'Stop via menu 3 (Stop Bot) / stop.bat / launcher.exe --stop' + C.R,
       ]);
     } else {
-      showResult('GAGAL START', false, [C.RED + r.msg + C.R]);
+      showResult('START FAILED', false, [C.RED + r.msg + C.R]);
     }
   } else if (id === 'stop') {
     const r = stopBot();
     refreshStat();
     showResult('STOP BOT', true, [
-      'Proses bot ditemukan : ' + r.found,
-      'Dihentikan          : ' + r.killed,
-      'Chrome bot          : dibersihkan',
+      'Bot processes found : ' + r.found,
+      'Stopped             : ' + r.killed,
+      'Chrome bot          : cleaned',
     ]);
   } else if (id === 'edit') {
     try { cp.spawn('cmd', ['/c', 'start', '', 'notepad.exe', F.accounts], { detached: true, stdio: 'ignore' }); } catch (_) {}
     showResult('EDIT ACCOUNT.TXT', true, [
-      'Notepad dibuka untuk account.txt',
-      C.DIM + 'Setelah selesai edit + save, tutup notepad lalu tekan apa pun.' + C.R,
+      'Notepad opened for account.txt',
+      C.DIM + 'After editing + saving, close notepad then press any key.' + C.R,
     ]);
   } else if (id === 'keys') {
     showKeysScreen();
@@ -311,19 +311,19 @@ function activate(id) {
     let n = 0;
     try { n = fs.readdirSync(F.profiles).filter((d) => { try { return fs.statSync(path.join(F.profiles, d)).isDirectory(); } catch (_) { return false; } }).length; } catch (_) {}
     if (findBotPids().length) {
-      showResult('RESET DITOLAK', false, [C.RED + 'Bot sedang jalan — Stop Bot dulu' + C.R]);
+      showResult('RESET DENIED', false, [C.RED + 'Bot is running — use Stop Bot first' + C.R]);
     } else if (n === 0) {
-      showResult('RESET CHROME PROFILES', true, ['Tidak ada profil untuk dihapus']);
+      showResult('RESET CHROME PROFILES', true, ['No profiles to delete']);
     } else {
       askConfirm('RESET CHROME PROFILES?', [
-        C.YEL + String(n) + ' profil chrome akan DIHAPUS PERMANEN.' + C.R,
-        'Semua akun harus signup/login ulang.',
+        C.YEL + String(n) + ' chrome profiles will be PERMANENTLY DELETED.' + C.R,
+        'All accounts will have to sign up/log in again.',
       ]);
       confirmHandler = () => {
         try { fs.rmSync(F.profiles, { recursive: true, force: true }); } catch (_) {}
         fs.mkdirSync(F.profiles, { recursive: true });
         refreshStat();
-        showResult('RESET SELESAI', true, ['Profil chrome dihapus. Akun akan login ulang saat bot jalan.']);
+        showResult('RESET DONE', true, ['Chrome profiles deleted. Accounts will log in again when the bot runs.']);
       };
     }
   } else if (id === 'quit') {
@@ -332,24 +332,24 @@ function activate(id) {
 }
 
 function runForegroundBot() {
-  // Bot jalan LANGSUNG di window ini (bukan window terpisah yang minimize —
-  // dulu pakai `start /MIN` + windowsHide: launcher tertutup, window bot tersembunyi,
-  // kelihatan seperti "bot tidak jalan"). User tekan Ctrl+C untuk stop.
+  // The bot runs DIRECTLY in this window (not a separate minimized window —
+  // the old `start /MIN` + windowsHide approach closed the launcher and hid the bot window,
+  // looking like "the bot isn't running"). The user presses Ctrl+C to stop.
   process.stdin.pause();
   try { process.stdin.setRawMode(false); } catch (_) {}
   try { process.stdout.write('\x1b[?25h\x1b[2J\x1b[H\x1b[0m'); } catch (_) {}
   try { fs.unlinkSync(F.pid); } catch (_) {}
-  console.log('=== BOT FOREGROUND — log tampil di sini. Ctrl+C = stop. ===');
+  console.log('=== BOT FOREGROUND — log streams here. Ctrl+C = stop. ===');
   const t0 = Date.now();
   try {
     const r = cp.spawnSync(NODE_EXE, [F.bot], { stdio: 'inherit', cwd: BOT_DIR, env: process.env });
-    console.log('\n=== BOT SELESAI (exit ' + (r.status === null ? 'killed' : r.status) + ', ' + Math.round((Date.now() - t0) / 1000) + 's) ===');
-    console.log('Tekan apa pun untuk kembali ke menu...');
+    console.log('\n=== BOT FINISHED (exit ' + (r.status === null ? 'killed' : r.status) + ', ' + Math.round((Date.now() - t0) / 1000) + 's) ===');
+    console.log('Press any key to return to the menu...');
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.once('data', () => { backToMenu(); });
   } catch (e) {
-    console.log('GAGAL menjalankan bot: ' + (e && e.message));
+    console.log('FAILED to run bot: ' + (e && e.message));
     process.stdin.setRawMode(true);
     process.stdin.resume();
     process.stdin.once('data', () => { backToMenu(); });
@@ -359,7 +359,7 @@ function runForegroundBot() {
 /* ---------- keyboard ---------- */
 
 let keyBuf = '';
-// dispatchKey: aksi untuk SATU tombol final (seq arrow / karakter biasa / ctrl).
+// dispatchKey: the action for ONE final key (arrow seq / plain char / ctrl).
 function dispatchKey(k) {
   if (k === '\x03') { shutdown(); return; }
   if (mode === 'menu') {
@@ -376,35 +376,35 @@ function dispatchKey(k) {
     else if (k === 'n' || k === 'N' || k === '\x1b') { confirmHandler = null; backToMenu(); }
   }
 }
-// onKey: pecah chunk mentah jadi tombol-tombol final DULU (batched arrow keys dari
-// pty/conhost sering sampai sebagai 1 chunk berisi beberapa \x1b[A/B sekaligus —
-// parser lama collapse 4 arrow jadi 1, gerakan navigasi hilang). Lalu dispatch satu-satu.
+// onKey: split the raw chunk into final keys FIRST (batched arrow keys from
+// pty/conhost often arrive as 1 chunk holding several \x1b[A/B at once —
+// the old parser collapsed 4 arrows into 1, losing navigation moves). Then dispatch one by one.
 function onKey(chunk) {
   let k = (typeof chunk === 'string' ? chunk : chunk.toString('binary'));
   if (keyBuf) { k = keyBuf + k; keyBuf = ''; }
   while (k.length) {
     if (k.startsWith('\x1b[')) {
-      // tunggu sequence CSI lengkap (\x1b[ ... huruf final)
-      const m = /^\x1b\[[0-9;?]*[A-Za-z~]/.exec(k); // '~' = final PgUp/PgDn/Del (\x1b[5~ dsb)
+      // wait for the complete CSI sequence (\x1b[ ... final letter)
+      const m = /^\x1b\[[0-9;?]*[A-Za-z~]/.exec(k); // '~' = final byte of PgUp/PgDn/Del (\x1b[5~ etc)
       if (!m) {
-        // belum lengkap (mis. '\x1b[' saja) — buffer; tapi kalau terlalu panjang tanpa
-        // match berarti sequence rusak (paste/kacau) — buang supaya tidak menelan key berikutnya
+        // incomplete (e.g. just '\x1b[') — buffer it; but if it grows too long with no
+        // match, the sequence is broken (paste/garbage) — drop it so it doesn't swallow the next key
         if (k.length > 8) { return; }
         keyBuf = k; return;
       }
       const seq = m[0];
       k = k.slice(seq.length);
       if (seq === '\x1b[A' || seq === '\x1b[B') dispatchKey(seq);
-      continue; // seq lain (C/D/Home/5~) diabaikan, JANGAN bocor sisa charnya
+      continue; // other seqs (C/D/Home/5~) are ignored, DON'T leak their leftover chars
     }
     if (k.startsWith('\x1b')) {
-      if (k.length === 1) { keyBuf = k; return; } // Esc tunggal: tunggu 1 char berikut (seq atau memang Esc)
-      k = k.slice(1); dispatchKey('\x1b'); continue; // \x1b + char lain = Esc tunggal dulu
+      if (k.length === 1) { keyBuf = k; return; } // lone Esc: wait for 1 more char (a sequence, or a real Esc)
+      k = k.slice(1); dispatchKey('\x1b'); continue; // \x1b + other char = treat as a lone Esc first
     }
     const ch = k[0];
     k = k.slice(1);
     if (ch === '\r') {
-      if (k.startsWith('\n')) k = k.slice(1); // CRLF = SATU Enter
+      if (k.startsWith('\n')) k = k.slice(1); // CRLF = ONE Enter
       dispatchKey('\r'); continue;
     }
     if (ch === '\n') { dispatchKey('\r'); continue; }
@@ -420,7 +420,7 @@ function shutdown() {
 
 async function interactive() {
   if (!process.stdout.isTTY && !FORCE_UI) {
-    console.log('UI interaktif butuh terminal. Opsi CLI: --status | --bg | --fg | --stop | --reset-profiles');
+    console.log('Interactive UI requires a terminal. CLI options: --status | --bg | --fg | --stop | --reset-profiles');
     process.exit(0);
   }
   try { process.stdin.setRawMode(true); } catch (_) {}
@@ -429,10 +429,10 @@ async function interactive() {
   readline.emitKeypressEvents(process.stdin);
   process.stdin.on('data', onKey);
 
-  await refreshStat();          // status pertama sebelum render
+  await refreshStat();          // first status before rendering
   drawFullClear();
 
-  // refresh status async tiap 2 dtk — TIDAK memblokir keypress
+  // async status refresh every 2 s — never blocks keypress
   const timer = setInterval(async () => {
     if (mode !== 'menu') return;
     try { await refreshStat(); } catch (_) {}
@@ -449,17 +449,17 @@ function cliStatus() {
   const pids = findBotPids();
   let keys = 0; try { keys = fs.readFileSync(F.keys, 'utf8').split(/\r?\n/).filter((l) => l.includes('|')).length; } catch (_) {}
   let acc = 0; try { acc = fs.readFileSync(F.accounts, 'utf8').split(/\r?\n/).map((s) => s.trim()).filter(Boolean).length; } catch (_) {}
-  console.log(`bot      : ${pids.length ? 'BERJALAN (pid ' + pids.join(', ') + ')' : 'MENGANGGUR'}`);
-  console.log(`akun     : ${acc} total, ${Math.max(0, acc - keys)} belum diproses`);
+  console.log(`bot      : ${pids.length ? 'RUNNING (pid ' + pids.join(', ') + ')' : 'IDLE'}`);
+  console.log(`accounts : ${acc} total, ${Math.max(0, acc - keys)} pending`);
   console.log(`keys     : ${keys}`);
 }
-function cliBg() { const r = runBackground(); console.log(r.ok ? `bot jalan background, pid ${r.pid} (log: ${F.log})` : r.msg); process.exit(r.ok ? 0 : 1); }
-function cliStop() { const r = stopBot(); console.log(`node bot ditemukan ${r.found}, killed ${r.killed}; chrome bot dibersihkan`); }
+function cliBg() { const r = runBackground(); console.log(r.ok ? `bot running in background, pid ${r.pid} (log: ${F.log})` : r.msg); process.exit(r.ok ? 0 : 1); }
+function cliStop() { const r = stopBot(); console.log(`node bot processes found ${r.found}, killed ${r.killed}; bot chrome cleaned`); }
 function cliReset() {
-  if (findBotPids().length) { console.log('stop bot dulu (--stop)'); process.exitCode = 1; return; }
+  if (findBotPids().length) { console.log('stop the bot first (--stop)'); process.exitCode = 1; return; }
   try { fs.rmSync(F.profiles, { recursive: true, force: true }); } catch (_) {}
   fs.mkdirSync(F.profiles, { recursive: true });
-  console.log('chrome_profiles dihapus');
+  console.log('chrome_profiles deleted');
 }
 function cliFg() { runForegroundBot(); }
 

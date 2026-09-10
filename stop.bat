@@ -1,6 +1,6 @@
 @echo off
-REM Stop bot openrouter-autologin (node + Chrome profil bot).
-REM Double-click file ini kapan pun bot perlu dihentikan.
+REM Stop the openrouter-autologin bot (node + bot's Chrome profile).
+REM Double-click this file any time the bot needs to be stopped.
 title Stop OpenRouter Bot
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop.ps1"
 echo.

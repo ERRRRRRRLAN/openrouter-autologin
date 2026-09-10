@@ -1,7 +1,7 @@
-# Stop semua proses bot openrouter-autologin:
-# - node openrouter_bot.js (bot itu sendiri)
-# - chrome.exe yang memakai profil chrome_profiles bot (user-data-dir openrouter-autologin)
-# Chrome utama / browser lain TIDAK disentuh.
+# Stop all openrouter-autologin bot processes:
+# - node openrouter_bot.js (the bot itself)
+# - chrome.exe using the bot's chrome_profiles (user-data-dir openrouter-autologin)
+# The main Chrome / other browsers are NOT touched.
 $ErrorActionPreference = "SilentlyContinue"
 
 $botNode = Get-CimInstance Win32_Process -Filter "Name='node.exe'" |
@@ -16,10 +16,10 @@ $botChrome = @(Get-CimInstance Win32_Process -Filter "Name='chrome.exe'" |
 foreach ($p in $botChrome) {
   Stop-Process -Id $p.ProcessId -Force
 }
-Write-Host ("Stopped " + $botChrome.Count + " chrome process (profil bot)")
+Write-Host ("Stopped " + $botChrome.Count + " chrome process (bot profile)")
 
 if (-not $botNode -and $botChrome.Count -eq 0) {
-  Write-Host "Tidak ada proses bot yang jalan."
+  Write-Host "No bot processes running."
 }
 Write-Host ""
-Write-Host "Selesai. Bot sudah berhenti total."
+Write-Host "Done. Bot fully stopped."

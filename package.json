@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node openrouter_bot.js",
     "bot": "node openrouter_bot.js",
-    "launcher": "node launcher.js"
+    "launcher": "node launcher.js",
+    "build:exe": "powershell -NoProfile -ExecutionPolicy Bypass -File build_exe.ps1"
   },
   "dependencies": {
     "puppeteer": "^24.10.0",

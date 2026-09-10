@@ -2,10 +2,10 @@
 
 /*
  * OpenRouter Auto Signup Bot
- * Alur: openrouter.ai -> Sign Up -> Google icon -> Google OAuth -> API key (copy icon)
- *       -> onboarding questions (role, name, referral, dll) -> done.
- * Arsitektur: state machine (mirip google_login_bot.js) + stealth + Chrome asli headful.
- * Setiap transisi state menyimpan screenshot + HTML dump ke logs/ untuk audit visual.
+ * Flow: openrouter.ai -> Sign Up -> Google icon -> Google OAuth -> API key (copy icon)
+ *       -> onboarding questions (role, name, referral, etc) -> done.
+ * Architecture: state machine (like google_login_bot.js) + stealth + real Chrome headful.
+ * Every state transition saves a screenshot + HTML dump to logs/ for visual audit.
  */
 
 const fs = require('fs');
@@ -26,7 +26,7 @@ const CONFIG = {
   actionTimeoutMs: 6000,
   typingDelay: [5, 12],
   maxStateMachineSteps: 40,
-  oauthTimeoutMs: 90000, // total budget OAuth
+  oauthTimeoutMs: 90000, // total OAuth budget
   interAccountDelayMs: [300, 600],
   logRotateBytes: 10 * 1024 * 1024,
 };
@@ -63,7 +63,7 @@ function log(tag, state, detail) {
   console.log(line);
   try {
     const logPath = path.join('logs', 'bot.log');
-    // rotasi: >10MB -> bot.log.old (cek tiap 50 baris, murah)
+    // rotation: >10MB -> bot.log.old (checked every 50 lines, cheap)
     if ((++__logWrites % 50) === 1) {
       try {
         if (fs.existsSync(logPath) && fs.statSync(logPath).size > CONFIG.logRotateBytes) {
@@ -83,8 +83,8 @@ function ensureDirs() {
 }
 
 function parseAccountLine(line) {
-  // Dukung dua format: "email|password" dan "email:password".
-  // Pilih separator yang muncul SETELAH bagian email (biar aman walau password mengandung ':' atau '|').
+  // Support two formats: "email|password" and "email:password".
+  // Pick the separator that appears AFTER the email part (safe even if the password contains ':' or '|').
   const at = line.indexOf('@');
   if (at < 0) return null;
   const afterAt = line.slice(at);
@@ -113,10 +113,10 @@ function readAccounts() {
 }
 
 function loadExistingEmails() {
-  // Skip hanya jika akun PASTI sudah sukses:
-  //  1) ada di api_keys.txt (key tersimpan), ATAU
-  //  2) baris terakhirnya di logs/results.jsonl berstatus ok=true.
-  // FAIL/GAGAL tidak skip -> di-retry run berikutnya (mulai dari line pertama account.txt).
+  // Skip only if the account DEFINITELY succeeded:
+  //  1) present in api_keys.txt (key saved), OR
+  //  2) its last line in logs/results.jsonl has status ok=true.
+  // FAIL does not skip -> retried on the next run (starting from the first line of account.txt).
   const existing = new Set();
   try {
     if (fs.existsSync(CONFIG.apiKeysFile)) {
@@ -142,14 +142,14 @@ function recordResult(email, ok, stage, detail) {
 
 function appendApiKey(email, apiKey) {
   try {
-    // replace baris lama untuk email yang sama (re-run -> key baru, tanpa duplikat)
+    // replace the old row for the same email (re-run -> new key, no duplicates)
     let rows = [];
     try { rows = fs.readFileSync(CONFIG.apiKeysFile, 'utf8').split(/\r?\n/).filter(Boolean); } catch (_) {}
     const kept = rows.filter((r) => r.split('|')[0].trim().toLowerCase() !== email.toLowerCase());
     kept.push(`${email}|${apiKey}`);
     fs.writeFileSync(CONFIG.apiKeysFile, kept.join('\n') + '\n');
-    log(email, 'SAVED', `API key tersimpan ke ${CONFIG.apiKeysFile}`);
-  } catch (e) { log(email, 'ERROR', `Gagal simpan API key: ${e.message}`); }
+    log(email, 'SAVED', `API key saved to ${CONFIG.apiKeysFile}`);
+  } catch (e) { log(email, 'ERROR', `Failed to save API key: ${e.message}`); }
 }
 
 function resolveChromeExecutable() {
@@ -164,8 +164,8 @@ function resolveChromeExecutable() {
 }
 
 async function captureArtifacts(page, email, state, prefix) {
-  // Jalur NORMAL (bukan error) tidak menulis screenshot/HTML — hemat I/O & disk.
-  // Error/stuck tetap terekam. Set BOT_DEBUG=1 untuk mencatat semuanya.
+  // The NORMAL path (not an error) writes no screenshot/HTML — saves I/O & disk.
+  // Errors/stuck states are still recorded. Set BOT_DEBUG=1 to log everything.
   const isNormalFlow = state === 'HOME' || state === 'OAUTH_END' || /^ONBOARDING_R\d+$/.test(state);
   if (isNormalFlow && process.env.BOT_DEBUG !== '1') return;
   const tag = `${safeName(email)}_${fileTs()}`;
@@ -182,8 +182,8 @@ async function classifyOpenRouter(page) {
     .evaluate(() => {
       const url = location.href.toLowerCase();
       const txt = ((document.body && document.body.innerText) || '').toLowerCase();
-      // Guard: hanya klasifikasi kalau benar-benar di openrouter.ai (URL Google memuat
-      // 'openrouter.ai' di query param continue — jangan sampai salah klasifikasi)
+      // Guard: only classify when truly on openrouter.ai (Google URLs contain
+      // 'openrouter.ai' in the continue query param — avoid misclassification)
       if (location.hostname !== 'openrouter.ai' && !location.hostname.endsWith('.openrouter.ai')) {
         return 'OR_NOT_OPENROUTER';
       }
@@ -198,7 +198,7 @@ async function classifyOpenRouter(page) {
         } catch (_) { return false; }
       };
 
-      // Sudah login di keys page: ada tombol create key / tabel keys
+      // Already logged in on keys page: create key button / keys table present
       if (url.includes('/settings/keys') || url.includes('/keys')) return 'OR_KEYS_PAGE';
       if (url.includes('/settings') && !url.includes('sign')) return 'OR_SETTINGS_PAGE';
 
@@ -209,7 +209,7 @@ async function classifyOpenRouter(page) {
         (txt.includes('i agree to the terms of service'))
       ) return 'OR_LEGAL_CONSENT';
 
-      // Wizard step "Your workspace is ready" / "Your API Key" (setelah Individual/Next)
+      // Wizard step "Your workspace is ready" / "Your API Key" (after Individual/Next)
       if (
         txt.includes('your workspace is ready') ||
         (txt.includes('your api key') && txt.includes('this is the only time'))
@@ -218,7 +218,7 @@ async function classifyOpenRouter(page) {
       // Wizard step "Add a payment method" (step 3/5) -> skip via "I'll do this later"
       if (txt.includes('add a payment method') || txt.includes("i'll do this later")) return 'OR_WIZARD_PAYMENT_STEP';
 
-      // Halaman onboarding "tentang diri kita" (role, name, dsb.)
+      // Onboarding page "about ourselves" (role, name, etc.)
       if (
         txt.includes('what brings you to openrouter') ||
         txt.includes('how do you plan to use openrouter') ||
@@ -237,14 +237,14 @@ async function classifyOpenRouter(page) {
         return 'OR_ONBOARDING_QUESTIONS';
       }
 
-      // Halaman sign up / login Clerk (bukan homepage anonim — home juga memuat 'sign up')
+      // Clerk sign up / login page (not the anonymous homepage — home also contains 'sign up')
       const isAnonHome = txt.includes('the unified interface') || txt.includes('better prices, better uptime');
       if (!isAnonHome && (txt.includes('sign up') || txt.includes('sign in to openrouter') || txt.includes('welcome back'))) {
         const googleBtn =
           hasVisible('button.cl-socialButtonsIconButton') ||
           has('[data-localization-key*="continueWith"][data-localization-key*="Google"]') ||
           (() => {
-            // Cari tombol apa pun yang memuat logo Google (svg/img/aria-label)
+            // Find any button containing the Google logo (svg/img/aria-label)
             const els = Array.from(document.querySelectorAll('button, a'));
             for (const el of els) {
               const t = (el.innerText || el.getAttribute('aria-label') || '').toLowerCase();
@@ -256,7 +256,7 @@ async function classifyOpenRouter(page) {
         return 'OR_AUTH_PAGE_NO_GOOGLE';
       }
 
-      // Homepage anonim
+      // Anonymous homepage
       if (url === 'https://openrouter.ai/' || url.replace(/\/$/, '') === 'https://openrouter.ai' || url.includes('?')) {
         if (txt.includes('the unified interface') || txt.includes('get api key') || txt.includes('sign up')) {
           return 'OR_HOME';
@@ -291,13 +291,13 @@ async function classifyGoogleOauth(page) {
         } catch (_) { return false; }
       };
 
-      // Sudah kembali ke openrouter.ai (sso-callback / sign-up) -> selesaikan OAuth state machine
-      // PENTING: cek hostname saja. URL Google sering memuat "openrouter.ai" di query param
-      // (continue/opparams), jadi includes() pada full URL false-positive.
+      // Back on openrouter.ai (sso-callback / sign-up) -> finish the OAuth state machine
+      // IMPORTANT: check the hostname only. Google URLs often contain "openrouter.ai" in a query param
+      // (continue/opparams), so includes() on the full URL gives false positives.
       if (location.hostname === 'openrouter.ai' || location.hostname.endsWith('.openrouter.ai')) return 'BACK_TO_OPENROUTER';
 
-      // DITOLAK / bot-detected: gagal cepat, JANGAN tunggu sebagai interstitial.
-      // (Log 20:12: /signin/rejected salah jatuh ke LOADING_INTERSTITIAL -> loop 9x sia-sia.)
+      // REJECTED / bot-detected: fail fast, do NOT wait as an interstitial.
+      // (Log 20:12: /signin/rejected wrongly fell into LOADING_INTERSTITIAL -> 9x wasted loop.)
       if (
         txt.includes('unusual activity') || txt.includes('unusual traffic') ||
         txt.includes('aktivitas tidak wajar') || txt.includes('may not be secure') ||
@@ -306,12 +306,12 @@ async function classifyGoogleOauth(page) {
         (url.includes('/signin/rejected') || url.includes('rejection'))
       ) return 'CAPTCHA_OR_BOT_DETECTED';
 
-      // Path TANPA query string — query ?continue=https://accounts.google.com/v3/signin/oauth/...
-      // pernah membuat halaman password salah dianggap interstitial (log 20:20 test run 2).
+      // Path WITHOUT query string — the ?continue=https://accounts.google.com/v3/signin/oauth/... query
+      // once made the password page wrongly classified as interstitial (log 20:20 test run 2).
       const path = (() => { try { return new URL(url).pathname; } catch (_) { return url; } })();
 
-      // Input email/password dideteksi SEBELUM interstitial (lebih spesifik) —
-      // URL challenge/pwd?continue=.../signin/oauth/ tidak boleh dianggap interstitial.
+      // Email/password input is detected BEFORE the interstitial (more specific) —
+      // a challenge/pwd?continue=.../signin/oauth/ URL must not be treated as an interstitial.
       const hasPwd = hasVisible('input[type="password"]:not([aria-hidden="true"])');
       const hasEmail =
         hasVisible('input[type="email"]') || hasVisible('input[name="identifier"]') ||
@@ -319,15 +319,15 @@ async function classifyGoogleOauth(page) {
       if (hasEmail) return 'EMAIL_INPUT';
       if (hasPwd) return 'PASSWORD_INPUT';
 
-      // Error Google (halaman 500 "That's an error" setelah submit password) — gagal cepat,
-      // jangan di-loop sebagai UNKNOWN 5x (log test run 3: 20:34-20:35).
+      // Google error (500 page "That's an error" after submitting the password) — fail fast,
+      // don't loop it as UNKNOWN 5x (log test run 3: 20:34-20:35).
       if (
         txt.includes("that's an error") || txt.includes('that’s an error') ||
         txt.includes('server error') ||
         (txt.includes('500') && txt.includes('error'))
       ) return 'GOOGLE_ERROR';
 
-      // Interstitial Google yang masih loading (signin/oauth/id dsb.) -> tunggu, jangan aksi
+      // Google interstitial still loading (signin/oauth/id etc.) -> wait, don't act
       if (
         (path.includes('/signin/oauth/id') || path.includes('setsid') || path.includes('/signin/oauth')) &&
         !txt.includes('will allow') && !txt.includes('choose an account') && !txt.includes('sign in to')
@@ -345,8 +345,8 @@ async function classifyGoogleOauth(page) {
 
 
 
-      // Workspace Terms of Service (akun Google Workspace baru): speedbump/workspacetermsofservice
-      // Tombolnya bisa "I understand" (Welcome to your new account), "I accept", "Continue", dsb.
+      // Workspace Terms of Service (new Google Workspace account): speedbump/workspacetermsofservice
+      // The button can be "I understand" (Welcome to your new account), "I accept", "Continue", etc.
       if (
         url.includes('speedbump/workspacetermsofservice') ||
         txt.includes('welcome to your new account') ||
@@ -388,8 +388,8 @@ async function clickByText(page, patterns, scope) {
       const wanted = pats.map((p) => p.toLowerCase());
       const root = scopeSel ? document.querySelector(scopeSel) || document : document;
       const els = Array.from(root.querySelectorAll('button, [role="button"], a, div[role="link"], label, span'));
-      // dua putaran: putaran-1 hanya elemen teks pendek (t <= 60 char, tombol sesungguhnya),
-      // putaran-2 baru longgar — supaya tidak salah klik paragraf (mis. "enterprise agreement" match 'agree')
+      // two passes: pass-1 only short-text elements (t <= 60 chars, the actual buttons),
+      // pass-2 is looser — so we don't mis-click a paragraph (e.g. "enterprise agreement" matching 'agree')
       for (const pass of [1, 2]) {
         for (const el of els) {
           const t = (el.innerText || el.textContent || '').trim().toLowerCase();
@@ -406,7 +406,7 @@ async function clickByText(page, patterns, scope) {
 async function typeIntoField(page, selector, value) {
   await page.waitForSelector(selector, { visible: true, timeout: CONFIG.actionTimeoutMs });
   const el = await page.$(selector);
-  if (!el) throw new Error(`field ${selector} tidak ditemukan`);
+  if (!el) throw new Error(`field ${selector} not found`);
   await el.click({ clickCount: 3 }).catch(() => {});
   await page.keyboard.press('Delete').catch(() => {});
   await page.type(selector, value, { delay: rand(...CONFIG.typingDelay) });
@@ -422,7 +422,7 @@ async function typeIntoField(page, selector, value) {
       const e = document.querySelector(sel);
       return e ? e.value : null;
     }, selector);
-    if (val2 !== value) throw new Error(`nilai field tetap salah: "${val2}"`);
+    if (val2 !== value) throw new Error(`field value still wrong: "${val2}"`);
   }
 }
 
@@ -456,25 +456,25 @@ async function clickSelector(page, sel) {
 // ===================== OPENROUTER ACTIONS =====================
 
 async function orClickGoogleButton(page) {
-  // Clerk: tombol sosial Google. Tombolnya icon-only (tidak ada teks di dalamnya).
+  // Clerk: the Google social button. It is icon-only (no text inside).
   return page
     .evaluate(() => {
-      // 1) Class khusus Clerk untuk provider Google (button.cl-socialButtonsIconButton__google)
+      // 1) Clerk class specific to the Google provider (button.cl-socialButtonsIconButton__google)
       const g = document.querySelector('button.cl-socialButtonsIconButton__google, button.cl-socialButtonsIconButton.google, button[class*="socialButtonsIconButton__google"]');
       if (g) { g.click(); return 'clerk-google-class'; }
-      // 2) Span ikon provider Google dengan aria-label
+      // 2) Google provider icon span with aria-label
       const iconSpan = document.querySelector('span.cl-socialButtonsProviderIcon__google, span[aria-label*="Google" i]');
       if (iconSpan) {
         const b = iconSpan.closest('button');
         if (b) { b.click(); return 'clerk-icon-span'; }
       }
-      // 3) Tombol apa pun dengan aria-label "Sign in with Google"
+      // 3) Any button with aria-label "Sign in with Google"
       const els = Array.from(document.querySelectorAll('button, a, [role="button"], [aria-label]'));
       for (const el of els) {
         const al = (el.getAttribute('aria-label') || '').toLowerCase();
         if (al.includes('google')) { const b = el.closest('button') || el; b.click(); return 'aria-label: ' + al.slice(0, 40); }
       }
-      // 4) Fallback teks (untuk halaman auth non-Clerk)
+      // 4) Text fallback (for non-Clerk auth pages)
       const els2 = Array.from(document.querySelectorAll('button, a, [role="button"]'));
       for (const el of els2) {
         const t = ((el.innerText || '') + ' ' + (el.getAttribute('aria-label') || '')).toLowerCase();
@@ -486,8 +486,8 @@ async function orClickGoogleButton(page) {
 }
 
 async function orHandleOnboarding(page, email) {
-  // Form onboarding OpenRouter: role select, name, referral, dsb.
-  // Strategi: isi nama (dari email prefix), pilih opsi pertama yang wajar pada tiap select, klik continue/save.
+  // OpenRouter onboarding form: role select, name, referral, etc.
+  // Strategy: fill in the name (from the email prefix), pick the first reasonable option in each select, click continue/save.
   return page
     .evaluate(async () => {
       const out = [];
@@ -499,13 +499,13 @@ async function orHandleOnboarding(page, email) {
         return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
       };
 
-      // a) Select native (role / rolename / referral) — pilih opsi non-empty pertama
+      // a) Native select (role / rolename / referral) — pick the first non-empty option
       const selects = Array.from(document.querySelectorAll('select'));
       for (const sel of selects) {
         if (!vis(sel)) continue;
         const opts = Array.from(sel.options).filter((o) => o.value && o.value !== '' && !/select|choose|pick/i.test(o.text));
         if (!opts.length) continue;
-        // Pilih berdasar nama field: role -> developer-ish, referral -> default pertama
+        // Choose based on the field name: role -> developer-ish, referral -> first default
         const name = (sel.name || sel.id || '').toLowerCase();
         let chosen = opts[0];
         if (name.includes('role') || name.includes('rolename')) {
@@ -518,7 +518,7 @@ async function orHandleOnboarding(page, email) {
         out.push(`select[${name}]=${chosen.text.trim().slice(0, 30)}`);
       }
 
-      // b) Input teks: name fields
+      // b) Text input: name fields
       const nameInputs = Array.from(document.querySelectorAll('input[type="text"], input:not([type])'));
       for (const inp of nameInputs) {
         if (!vis(inp)) continue;
@@ -533,8 +533,8 @@ async function orHandleOnboarding(page, email) {
         }
       }
 
-      // c) Custom dropdown (klik label lalu pilih opsi) — hanya jika masih ada elemen combobox belum terisi
-      // d) Radio pilihan pertama — tapi PREFERENSI: kartu "Individual" (wizard baru OpenRouter)
+      // c) Custom dropdown (click the label then pick an option) — only if a combobox is still unfilled
+      // d) First radio choice — but PREFERENCE: the "Individual" card (new OpenRouter wizard)
       const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
       const seenGroups = new Set();
       const cards = Array.from(document.querySelectorAll('[role="radio"], label, div, button')).filter((el) => {
@@ -543,7 +543,7 @@ async function orHandleOnboarding(page, email) {
       });
       if (cards.length) {
         try { cards[0].click(); out.push('card=individual'); } catch (_) {}
-        // pastikan tidak ada radio lain yang perlu diklik
+        // make sure no other radio needs clicking
       } else {
         for (const r of radios) {
           if (!vis(r)) continue;
@@ -559,10 +559,10 @@ async function orHandleOnboarding(page, email) {
 }
 
 async function orClickOnboardingNext(page) {
-  // Klik continue/save/done/submit pada onboarding
+  // Click continue/save/done/submit on the onboarding
   const clicked = await clickByText(page, ['continue', 'save', 'submit', 'done', 'next', 'lanjutkan', 'simpan', 'selesai']);
   if (clicked) return clicked;
-  // Fallback: tombol primary di form
+  // Fallback: the primary form button
   const ok = await page.evaluate(() => {
     const btns = Array.from(document.querySelectorAll('button'));
     for (const b of btns) {
@@ -584,11 +584,11 @@ async function orClickCreateKey(page) {
         const s = window.getComputedStyle(el);
         return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
       };
-      // 0) Dialog "Verify your email" (Clerk) menghalangi create -> tandai VERIF
+      // 0) A "Verify your email" modal (Clerk) blocking create -> flag VERIF
       const bodyTxt = (document.body.innerText || '').toLowerCase();
       const verifyDialog = /verify\s+your\s+email/.test(bodyTxt) && /send\s+code/.test(bodyTxt);
       if (verifyDialog) return { verify: true };
-      // 1) tombol "+ New Key" (UI baru) atau variasi teks lama
+      // 1) the "+ New Key" button (new UI) or old text variants
       const btns = Array.from(document.querySelectorAll('button, a, [role="button"]'));
       const wanted = ['new key', '+ new key', 'create key', 'create api key', 'create a new key', '+ create', 'create'];
       for (const b of btns) {
@@ -600,7 +600,7 @@ async function orClickCreateKey(page) {
     })
     .catch(() => ({ verify: false, text: null }));
   if (res && res.verify) {
-    // Tutup dialog verify (Cancel) lalu laporkan sebagai blocker
+    // Close the verify modal (Cancel) then report it as a blocker
     const closed = await page
       .evaluate(() => {
         const btns = Array.from(document.querySelectorAll('button'));
@@ -611,11 +611,11 @@ async function orClickCreateKey(page) {
         return false;
       })
       .catch(() => false);
-    log('OR:KEYS', 'verifyEmail', `dialog "Verify your email" muncul — Cancel diklik (${closed})`);
+    log('OR:KEYS', 'verifyEmail', `"Verify your email" modal appeared — Cancel clicked (${closed})`);
     return 'VERIFY_EMAIL_REQUIRED';
   }
   if (res && res.text) {
-    // dialog create terbuka -> isi nama lalu klik tombol "Create" di dialog
+    // the create modal is open -> fill in the name then click the "Create" button in the modal
     await new Promise((r) => setTimeout(r, 300));
     const sub = await page
       .evaluate(() => {
@@ -625,7 +625,7 @@ async function orClickCreateKey(page) {
           const s = window.getComputedStyle(el);
           return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
         };
-        // isi nama key: input placeholder mengandung 'chatbot key' (field Name di dialog)
+        // fill in the key name: the input whose placeholder contains 'chatbot key' (the Name field in the modal)
         const inp = Array.from(document.querySelectorAll('input[placeholder]')).find((i) =>
           /chatbot key/i.test(i.getAttribute('placeholder') || '')
         );
@@ -633,10 +633,10 @@ async function orClickCreateKey(page) {
           const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
           setter.call(inp, 'bot-key');
           inp.dispatchEvent(new Event('input', { bubbles: true }));
-          // beberapa UI react perlu event 'change' juga
+          // some React UIs also need the 'change' event
           inp.dispatchEvent(new Event('change', { bubbles: true }));
         }
-        // klik tombol "Create" (enabled)
+        // click the "Create" button (enabled)
         const btns = Array.from(document.querySelectorAll('button'));
         for (const b of btns) {
           const t = (b.innerText || '').trim().toLowerCase();
@@ -650,18 +650,18 @@ async function orClickCreateKey(page) {
       .catch(() => null);
     if (sub) {
       try { await page.mouse.click(sub.x, sub.y); } catch (_) {}
-      log('OR:KEYS', 'createDialog', `nama=${sub.named ? 'bot-key' : '(default)'}, klik Create @ (${Math.round(sub.x)},${Math.round(sub.y)})`);
-      return res.text + '+dialog-create';
+      log('OR:KEYS', 'createDialog', `name=${sub.named ? 'bot-key' : '(default)'}, click Create @ (${Math.round(sub.x)},${Math.round(sub.y)})`);
+      return res.text + '+modal-create';
     }
-    log('OR:KEYS', 'createDialog', 'tombol Create tidak ketemu/disabled di dialog');
+    log('OR:KEYS', 'createDialog', 'Create button not found/disabled in the modal');
     return res.text;
   }
   return null;
 }
 
 async function orClickCopyKeyIcon(page) {
-  // Klik ikon copy di samping key. Berlaku untuk key BARU (modal "key created") maupun
-  // key LAMA yang sudah ada di tabel /settings/keys (edge case: akun sudah punya key).
+  // Click the copy icon next to the key. Works for a NEW key (the "key created" modal) and
+  // for an OLD key already in the /settings/keys table (edge case: account already has a key).
   return page
     .evaluate(() => {
       const vis = (el) => {
@@ -669,7 +669,7 @@ async function orClickCopyKeyIcon(page) {
         const r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       };
-      // 0) Tombol dengan aria-label / title mengandung "copy" (prioritas tertinggi, paling spesifik)
+      // 0) A button whose aria-label / title contains "copy" (highest priority, most specific)
       const all = Array.from(document.querySelectorAll('button, [role="button"], a, svg, span, div'));
       for (const el of all) {
         const al = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
@@ -678,19 +678,19 @@ async function orClickCopyKeyIcon(page) {
           if (vis(b)) { b.click(); return 'aria-copy: ' + al.trim().slice(0, 30); }
         }
       }
-      // 1) Baris tabel / item list yang menampung teks key (sk-or-v1-...) -> klik ikon copy di baris itu.
-      //    Key lama di tabel ditampilkan sebagai "sk-or-v1-abc...xyz" (terpotong), jadi cek pola terpotong juga.
+      // 1) A table row / list item holding the key text (sk-or-v1-...) -> click the copy icon in that row.
+      //    Old keys in the table are shown as "sk-or-v1-abc...xyz" (truncated), so also check the truncated pattern.
       const keyRow = (e) => {
         const t = (e.innerText || e.textContent || '');
         return /sk-or-v1-[a-z0-9]{4,}/i.test(t);
       };
       const holders = Array.from(document.querySelectorAll('tr, li, div'))
         .filter(keyRow)
-        .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length); // paling dalam dulu
+        .sort((a, b) => (a.innerText || '').length - (b.innerText || '').length); // deepest first
       for (const kh of holders) {
         let scope = kh;
         for (let i = 0; i < 4 && scope; i++) {
-          // tombol yang icon-only (teks kosong) atau berisi svg copy
+          // a button that is icon-only (empty text) or contains a copy svg
           const btns = Array.from(scope.querySelectorAll('button')).filter((b) => {
             const t = (b.innerText || '').trim().toLowerCase();
             return t !== 'delete' && t !== 'revoke' && t !== 'remove';
@@ -705,8 +705,8 @@ async function orClickCopyKeyIcon(page) {
 }
 
 async function orDetectExistingKeys(page) {
-  // Deteksi apakah keys page punya key (edge case "api key sudah ada").
-  // Key di halaman bisa tampil FULL (saat baru dibuat) atau MASKED (sk-or-v1-462****e30c).
+  // Detect whether the keys page already has a key (edge case "api key already exists").
+  // A key on the page can appear FULL (right after creation) or MASKED (sk-or-v1-462****e30c).
   // Return { full: string|null, maskedCount: number }
   return page
     .evaluate(() => {
@@ -720,8 +720,8 @@ async function orDetectExistingKeys(page) {
 }
 
 async function orWaitKeysReady(page, timeoutMs = 4000) {
-  // Tunggu UI keys benar-benar render (tombol create / baris key / empty-state) —
-  // hindari aksi terlalu cepat saat SPA masih loading (log 16:55: "create tidak ketemu").
+  // Wait for the keys UI to fully render (create button / key rows / empty-state) —
+  // avoid acting too early while the SPA is still loading (log 16:55: "create not found").
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const ready = await page
@@ -742,13 +742,13 @@ async function orWaitKeysReady(page, timeoutMs = 4000) {
 }
 
 async function orDeleteAllKeys(page, email) {
-  // Hapus SEMUA key di keys page.
-  // CARA 1 (utama): klik checkbox "Select all rows" -> muncul bulk toolbar -> klik "Delete" (n).
-  // CARA 2 (fallback): per baris via tombol "Row actions" -> menu -> item Delete -> konfirmasi.
+  // Delete ALL keys on the keys page.
+  // WAY 1 (primary): click the "Select all rows" checkbox -> a bulk toolbar appears -> click "Delete" (n).
+  // WAY 2 (fallback): per row via the "Row actions" button -> menu -> Delete item -> confirm.
   let deleted = 0;
   let fallback = false;
 
-  // ---------- CARA 1: select all + bulk delete ----------
+  // ---------- WAY 1: select all + bulk delete ----------
   const selectAllResult = await page
     .evaluate(() => {
       const vis = (el) => {
@@ -760,7 +760,7 @@ async function orDeleteAllKeys(page, email) {
       const cb = Array.from(document.querySelectorAll('[role="checkbox"]')).find((c) =>
         (c.getAttribute('aria-label') || '').toLowerCase().includes('select all')
       );
-      if (!cb || !vis(cb)) return { ok: false, why: 'checkbox select-all tidak ditemukan' };
+      if (!cb || !vis(cb)) return { ok: false, why: 'select-all checkbox not found' };
       const checked = cb.getAttribute('aria-checked') === 'true';
       const r = cb.getBoundingClientRect();
       return { ok: true, checked, x: r.x + r.width / 2, y: r.y + r.height / 2 };
@@ -773,7 +773,7 @@ async function orDeleteAllKeys(page, email) {
   }
 
   if (selectAllResult && selectAllResult.ok) {
-    // cari tombol bulk delete yang muncul setelah select-all (toolbar)
+    // find the bulk delete button that appears after select-all (the toolbar)
     let bulk = null;
     for (let t = 0; t < 5 && !bulk; t++) {
       bulk = await page
@@ -799,11 +799,11 @@ async function orDeleteAllKeys(page, email) {
       if (!bulk) await new Promise((r) => setTimeout(r, 600));
     }
     if (bulk) {
-      log(email, 'OR:KEYS', `klik bulk delete "${bulk.t}" @ (${Math.round(bulk.x)},${Math.round(bulk.y)})`);
+      log(email, 'OR:KEYS', `click bulk delete "${bulk.t}" @ (${Math.round(bulk.x)},${Math.round(bulk.y)})`);
       try { await page.mouse.click(bulk.x, bulk.y); } catch (_) {}
       await new Promise((r) => setTimeout(r, 600));
-      // konfirmasi dialog "Delete" — PRIORITAS tombol di dalam modal/dialog
-      // (tombol bulk "Delete" di toolbar masih ada teksnya; jangan klik itu lagi)
+      // confirm the "Delete" modal — PRIORITY goes to buttons inside the modal
+      // (the bulk "Delete" button in the toolbar still has its text; don't click it again)
       let confirm = null;
       for (let t = 0; t < 4 && !confirm; t++) {
         confirm = await page
@@ -815,7 +815,7 @@ async function orDeleteAllKeys(page, email) {
             };
             const inDialog = (b) => !!b.closest('[role="dialog"], [data-slot="dialog"], dialog, [data-state="open"][role="alertdialog"]');
             const dialogs = Array.from(document.querySelectorAll('[role="dialog"], dialog, [role="alertdialog"]')).filter(vis);
-            // 1) tombol delete di dalam dialog yang terbuka
+            // 1) the delete button inside the open modal
             if (dialogs.length) {
               const btns = dialogs[dialogs.length - 1].querySelectorAll('button, [role="button"]');
               for (const b of btns) {
@@ -825,7 +825,7 @@ async function orDeleteAllKeys(page, email) {
                   return { x: r.x + r.width / 2, y: r.y + r.height / 2, t, inDialog: true };
                 }
               }
-              return null; // dialog terbuka tapi tombol delete tidak ada -> jangan klik bulk lagi
+              return null; // modal open but no delete button -> don't click bulk again
             }
             return null;
           })
@@ -834,34 +834,34 @@ async function orDeleteAllKeys(page, email) {
       }
       if (confirm) {
         try { await page.mouse.click(confirm.x, confirm.y); } catch (_) {}
-        log(email, 'OR:KEYS', `klik konfirmasi bulk "${confirm.t}" (dialog)`);
+        log(email, 'OR:KEYS', `click bulk confirm "${confirm.t}" (modal)`);
         await new Promise((r) => setTimeout(r, 600));
       } else {
-        log(email, 'OR:KEYS', 'dialog konfirmasi bulk tidak terdeteksi');
+        log(email, 'OR:KEYS', 'bulk confirmation modal not detected');
       }
-      // verifikasi: tunggu DOM re-render — butuh bacaan STABIL (sisa sama >= 2 poll
-      // setelah poll ke-2) ATAU tabel kosong. Satu bacaan bisa stale (React belum
-      // re-render) -> dulu memicu fallback row-actions sia-sia (log 16:55).
+      // verify: wait for the DOM re-render — need a STABLE reading (same remainder >= 2 polls
+      // after the 2nd poll) OR an empty table. A single reading can be stale (React not yet
+      // re-rendered) -> this used to trigger a wasted row-actions fallback (log 16:55).
       let left = null;
       let prevCount = -1;
       for (let vpoll = 0; vpoll < 10; vpoll++) {
         left = await orDetectExistingKeys(page);
-        if (left && left.maskedCount === 0 && !left.full) break; // tabel benar-benar kosong
-        if (left && left.maskedCount === prevCount && vpoll >= 2) break; // stabil
+        if (left && left.maskedCount === 0 && !left.full) break; // table truly empty
+        if (left && left.maskedCount === prevCount && vpoll >= 2) break; // stable
         prevCount = left ? left.maskedCount : -1;
         await new Promise((r) => setTimeout(r, 400));
       }
       if (!left) left = await orDetectExistingKeys(page);
-      log(email, 'OR:KEYS', `setelah bulk delete: sisa key = ${left.maskedCount}`);
-      if (left.maskedCount === 0) return 999; // sukses penuh via select-all
-      log(email, 'OR:KEYS', 'bulk delete via select-all tidak menghapus semua -> fallback row-actions');
+      log(email, 'OR:KEYS', `after bulk delete: keys left = ${left.maskedCount}`);
+      if (left.maskedCount === 0) return 999; // full success via select-all
+      log(email, 'OR:KEYS', 'bulk delete via select-all did not remove everything -> fallback to row-actions');
     } else {
-      log(email, 'OR:KEYS', 'tombol bulk delete tidak muncul setelah select-all -> fallback row-actions');
+      log(email, 'OR:KEYS', 'bulk delete button did not appear after select-all -> fallback to row-actions');
     }
   }
   fallback = true;
 
-  // ---------- CARA 2 (fallback): row-actions per baris ----------
+  // ---------- WAY 2 (fallback): row-actions per row ----------
   for (let round = 0; round < 30; round++) {
     const target = await page
       .evaluate(() => {
@@ -901,7 +901,7 @@ async function orDeleteAllKeys(page, email) {
         return false;
       })
       .catch(() => false);
-    log(email, 'OR:KEYS', `buka menu row-actions via JS click (${opened})`);
+    log(email, 'OR:KEYS', `open the row-actions menu via JS click (${opened})`);
     await new Promise((r) => setTimeout(r, 450));
     let menuItem = await page
       .evaluate(() => {
@@ -944,10 +944,10 @@ async function orDeleteAllKeys(page, email) {
         }, menuItem)
         .catch(() => false);
       try { await page.mouse.click(menuItem.x, menuItem.y); } catch (_) {}
-      log(email, 'OR:KEYS', `klik menu item "${menuItem.t}" @ (${Math.round(menuItem.x)},${Math.round(menuItem.y)}) js=${clickedOk}`);
+      log(email, 'OR:KEYS', `click menu item "${menuItem.t}" @ (${Math.round(menuItem.x)},${Math.round(menuItem.y)}) js=${clickedOk}`);
       await new Promise((r) => setTimeout(r, 500));
     } else {
-      log(email, 'OR:KEYS', 'item Delete tidak ketemu di menu row actions');
+      log(email, 'OR:KEYS', 'Delete item not found in the row actions menu');
     }
     const confirm = await page
       .evaluate(() => {
@@ -964,7 +964,7 @@ async function orDeleteAllKeys(page, email) {
       .catch(() => null);
     if (confirm) {
       try { await page.mouse.click(confirm.x, confirm.y); } catch (_) {}
-      log(email, 'OR:KEYS', `klik konfirmasi "${confirm.t}"`);
+      log(email, 'OR:KEYS', `click confirm "${confirm.t}"`);
     }
     deleted++;
     await new Promise((r) => setTimeout(r, 600));
@@ -974,8 +974,8 @@ async function orDeleteAllKeys(page, email) {
 
 
 async function orReadKeyFromDom(page) {
-  // 0) PRIORITAS: dialog "Your new key" memuat <onepassword-save-button value=BASE64>
-  //    yang berisi JSON dengan API key FULL (meski tampilan di layar masked).
+  // 0) PRIORITY: the "Your new key" modal contains <onepassword-save-button value=BASE64>
+  //    holding JSON with the FULL API key (even though the on-screen display is masked).
   const fromOnePassword = await page
     .evaluate(() => {
       try {
@@ -990,7 +990,7 @@ async function orReadKeyFromDom(page) {
     })
     .catch(() => null);
   if (fromOnePassword) return { source: 'onepassword-widget', key: fromOnePassword };
-  // Coba baca key langsung dari DOM (kadang ditampilkan full saat baru dibuat)
+  // Try reading the key directly from the DOM (sometimes shown in full right after creation)
   const fromDom = await page
     .evaluate(() => {
       const m = (document.body.innerText || '').match(/sk-or-v1-[a-zA-Z0-9]{20,}/);
@@ -1010,12 +1010,12 @@ async function orReadKeyFromDom(page) {
 // ===================== GOOGLE OAUTH SUB-STATE MACHINE =====================
 
 async function handleAccountChooser(page, account) {
-  // 1) temukan elemen baris akun target -> klik dengan MOUSE di koordinatnya (JS click tidak
-  //    memicu navigasi di halaman chooser Google)
+  // 1) find the target account row element -> click it with the MOUSE at its coordinates (a JS click
+  //    does not trigger navigation on the Google chooser page)
   const target = await page
     .evaluate((email) => {
       const norm = email.toLowerCase();
-      // Kartu akun di halaman chooser: div[data-identifier="email"] (multipleChoiceIdentifier)
+      // Account cards on the chooser page: div[data-identifier="email"] (multipleChoiceIdentifier)
       const cards = Array.from(document.querySelectorAll('[data-identifier]'));
       for (const card of cards) {
         if ((card.getAttribute('data-identifier') || '').toLowerCase() === norm) {
@@ -1049,7 +1049,7 @@ async function handleAccountChooser(page, account) {
       return target.other ? 'USE_ANOTHER_ACCOUNT (mouse)' : 'EXISTING_SESSION (mouse)';
     } catch (_) {}
   }
-  // 2) fallback lama: JS click
+  // 2) old fallback: JS click
   return page
     .evaluate((email) => {
       const norm = email.toLowerCase();
@@ -1070,23 +1070,23 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
   let pwdDone = false;
 
   while (Date.now() < deadline) {
-    // popup OAuth bisa ditutup diam-diam oleh Google -> cek sebelum evaluate (hindari hang)
+    // the OAuth popup can be silently closed by Google -> check before evaluate (avoid hanging)
     try {
       if (oauthPage.isClosed()) {
-        log(account.email, 'OAUTH', 'Popup OAuth TERCLOSED — anggap flow selesai (cek tab utama)');
-        return { ok: true, detail: 'popup closed (lanjut cek tab utama)' };
+        log(account.email, 'OAUTH', 'OAuth popup CLOSED — assume the flow finished (check the main tab)');
+        return { ok: true, detail: 'popup closed (proceed to check the main tab)' };
       }
       const u = oauthPage.url();
       if (!u || u === 'about:blank') {
-        log(account.email, 'OAUTH', 'Popup OAuth URL kosong — anggap selesai (cek tab utama)');
-        return { ok: true, detail: 'popup blank (lanjut cek tab utama)' };
+        log(account.email, 'OAUTH', 'OAuth popup URL empty — assume finished (check the main tab)');
+        return { ok: true, detail: 'popup blank (proceed to check the main tab)' };
       }
     } catch (_) {}
     let state = null;
     try {
       state = await classifyGoogleOauth(oauthPage);
     } catch (e) {
-      log(account.email, 'OAUTH', `classify gagal (${(e && e.message) || e}) — cek ulang 2 dtk`);
+      log(account.email, 'OAUTH', `classify failed (${(e && e.message) || e}) — recheck in 2 s`);
       await sleep(800);
       continue;
     }
@@ -1102,7 +1102,7 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
       case 'EMAIL_INPUT': {
         if (repeats >= 1 || emailDone) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_EMAIL_LOOP');
-          return { ok: false, detail: 'Halaman email muncul lagi (email salah / Next gagal)' };
+          return { ok: false, detail: 'Email page reappeared (wrong email / Next failed)' };
         }
         const sel = 'input[name="identifier"], input[type="email"]';
         const current = await oauthPage.evaluate((s) => {
@@ -1118,7 +1118,7 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
       case 'PASSWORD_INPUT': {
         if (repeats >= 1 || pwdDone) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_PWD_LOOP');
-          return { ok: false, detail: 'Password ditolak / halaman password muncul kembali' };
+          return { ok: false, detail: 'Password rejected / password page reappeared' };
         }
         await typeIntoField(oauthPage, 'input[name="Passwd"], input[type="password"]:not([aria-hidden="true"])', account.password);
         pwdDone = true;
@@ -1127,21 +1127,21 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
         break;
       }
       case 'BACK_TO_OPENROUTER': {
-        log(account.email, 'OAUTH', 'URL kembali ke openrouter.ai — OAuth selesai');
-        return { ok: true, detail: 'kembali ke openrouter.ai' };
+        log(account.email, 'OAUTH', 'URL returned to openrouter.ai — OAuth finished');
+        return { ok: true, detail: 'returned to openrouter.ai' };
       }
       case 'LOADING_INTERSTITIAL': {
-        // signin/oauth/id = "You're signing back in" (konfirmasi, body text kosong/shadow)
-        // ATAU account picker baru. Strategi ganda:
-        //   (a) klik <button> Continue via mouse
-        //   (b) klik kartu akun [data-identifier]
-        // SAFETY: jangan pernah klik Next di halaman /challenge/ (pwd/otp) —
-        // itu bukan interstitial; klik Next di sana = submit password kosong berulang.
+        // signin/oauth/id = "You're signing back in" (a confirmation, body text empty/shadow)
+        // OR the new account picker. Dual strategy:
+        //   (a) click the <button> Continue via mouse
+        //   (b) click the account card [data-identifier]
+        // SAFETY: never click Next on a /challenge/ (pwd/otp) page —
+        // that is not an interstitial; clicking Next there = submitting an empty password repeatedly.
         {
           let cu = '';
           try { cu = new URL(oauthPage.url()).pathname; } catch (_) { cu = oauthPage.url(); }
           if (cu.includes('/challenge/')) {
-            log(account.email, 'OAUTH:INTERSTITIAL', `URL ${cu} = challenge, bukan interstitial — tunggu classifier`);
+            log(account.email, 'OAUTH:INTERSTITIAL', `URL ${cu} = a challenge, not an interstitial — wait for the classifier`);
             await sleep(600);
             break;
           }
@@ -1159,7 +1159,7 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
                   if (r.width > 0) return { x: r.x + r.width / 2, y: r.y + r.height / 2, what: 'button:' + t };
                 }
               }
-              // (b) kartu akun
+              // (b) the account card
               const els = Array.from(document.querySelectorAll('[data-identifier]'));
               for (const el of els) {
                 if ((el.getAttribute('data-identifier') || '').toLowerCase() === norm) {
@@ -1172,14 +1172,14 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
             .catch(() => null);
           if (target) {
             try { await oauthPage.mouse.click(target.x, target.y); } catch (_) {}
-            log(account.email, 'OAUTH:INTERSTITIAL', `klik mouse "${target.what}" @ (${Math.round(target.x)},${Math.round(target.y)})`);
+            log(account.email, 'OAUTH:INTERSTITIAL', `mouse click "${target.what}" @ (${Math.round(target.x)},${Math.round(target.y)})`);
             await sleep(900);
             break;
           }
         }
         if (repeats >= 8) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_INTERSTITIAL_STUCK');
-          return { ok: false, detail: 'Interstitial Google tidak selesai-selesai' };
+          return { ok: false, detail: 'Google interstitial never finishes' };
         }
         await sleep(700);
         break;
@@ -1187,12 +1187,12 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
       case 'ACCOUNT_CHOOSER': {
         if (repeats >= 3) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_CHOOSER_STUCK');
-          return { ok: false, detail: 'Account chooser tidak mau lanjut setelah beberapa klik' };
+          return { ok: false, detail: 'Account chooser will not proceed after several clicks' };
         }
         const action = await handleAccountChooser(oauthPage, account);
         if (!action) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_CHOOSER_FAIL');
-          return { ok: false, detail: 'Tidak bisa memilih akun di chooser' };
+          return { ok: false, detail: 'Could not select an account in the chooser' };
         }
         log(account.email, 'OAUTH:ACCOUNT_CHOOSER', action);
         await sleep(900);
@@ -1206,24 +1206,24 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
         return { ok: false, detail: 'NEEDS_MANUAL_VERIFICATION' };
       case 'GOOGLE_ERROR':
         await captureArtifacts(oauthPage, account.email, 'OAUTH_GOOGLE_ERROR');
-        return { ok: false, detail: 'Google error page (500/blokir) setelah submit kredensial' };
+        return { ok: false, detail: 'Google error page (500/blocked) after submitting credentials' };
       case 'RECOVERY_INFO_PROMPT': {
         if (repeats >= 1) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_RECOVERY');
-          return { ok: false, detail: 'Prompt recovery tetap muncul' };
+          return { ok: false, detail: 'Recovery prompt keeps appearing' };
         }
         const clicked = await clickByText(oauthPage, ['not now', 'skip', 'cancel', 'later', 'nanti saja', 'lewati', 'batal']);
-        if (clicked) { log(account.email, 'OAUTH:RECOVERY', `klik "${clicked}"`); await sleep(500); break; }
+        if (clicked) { log(account.email, 'OAUTH:RECOVERY', `click "${clicked}"`); await sleep(500); break; }
         await captureArtifacts(oauthPage, account.email, 'OAUTH_RECOVERY');
-        return { ok: false, detail: 'Tombol Not now/Skip tidak ditemukan' };
+        return { ok: false, detail: 'Not now/Skip button not found' };
       }
       case 'WORKSPACE_TERMS': {
-        // Google Workspace ToS: centang "I accept" lalu klik Accept / Continue
+        // Google Workspace ToS: check "I accept" then click Accept / Continue
         if (repeats >= 2) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_WS_TERMS');
-          return { ok: false, detail: 'Workspace terms tidak bisa diterima' };
+          return { ok: false, detail: 'Workspace terms could not be accepted' };
         }
-        // coba centang checkbox "I accept" kalau ada
+        // try to check the "I accept" checkbox if present
         try {
           await oauthPage.evaluate(() => {
             const cbs = Array.from(document.querySelectorAll('input[type="checkbox"]'));
@@ -1235,18 +1235,18 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
           'i understand', 'accept', 'i accept', 'agree', 'i agree', 'continue', 'accept all', 'lanjutkan', 'setuju', 'got it',
         ]);
         if (clicked) {
-          log(account.email, 'OAUTH:WORKSPACE_TERMS', `klik "${clicked}"`);
+          log(account.email, 'OAUTH:WORKSPACE_TERMS', `click "${clicked}"`);
           await sleep(800);
           break;
         }
-        // fallback 1: tombol Google material (jsname LgbsSe) — tombol utama halaman speedbump
+        // fallback 1: the Google material button (jsname LgbsSe) — the speedbump page's main button
         const ok1 = await oauthPage.evaluate(() => {
           const btn = document.querySelector('button[jsname="LgbsSe"]');
           if (btn && !btn.disabled) { btn.click(); return 'jsname-LgbsSe: ' + (btn.innerText || '').trim().slice(0, 30); }
           return null;
         }).catch(() => null);
-        if (ok1) { log(account.email, 'OAUTH:WORKSPACE_TERMS', `klik tombol "${ok1}"`); await sleep(800); break; }
-        // fallback 2: tombol dengan id/nama khas workspace terms
+        if (ok1) { log(account.email, 'OAUTH:WORKSPACE_TERMS', `click button "${ok1}"`); await sleep(800); break; }
+        // fallback 2: a button with a workspace-terms-specific id/name
         const ok2 = await oauthPage.evaluate(() => {
           const btns = Array.from(document.querySelectorAll('button, div[role="button"]'));
           for (const b of btns) {
@@ -1255,16 +1255,16 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
           }
           return null;
         }).catch(() => null);
-        if (ok2) { log(account.email, 'OAUTH:WORKSPACE_TERMS', `klik tombol "${ok2}"`); await sleep(800); break; }
+        if (ok2) { log(account.email, 'OAUTH:WORKSPACE_TERMS', `click button "${ok2}"`); await sleep(800); break; }
         await captureArtifacts(oauthPage, account.email, 'OAUTH_WS_TERMS');
-        return { ok: false, detail: 'Tombol Accept Workspace Terms tidak ditemukan' };
+        return { ok: false, detail: 'Workspace Terms Accept button not found' };
       }
       case 'TERMS_AGREEMENT': {
         if (repeats >= 3) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_TERMS');
-          return { ok: false, detail: 'Halaman terms tetap muncul' };
+          return { ok: false, detail: 'Terms page keeps appearing' };
         }
-        // 1) pastikan checkbox "I agree..." tercentang (button[role=checkbox] OR input)
+        // 1) make sure the "I agree..." checkbox is checked (button[role=checkbox] OR input)
         try {
           await oauthPage.evaluate(() => {
             const cbs = Array.from(document.querySelectorAll('[role="checkbox"], input[type="checkbox"]'));
@@ -1275,7 +1275,7 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
           });
         } catch (_) {}
         await sleep(400);
-        // 2) klik tombol <button> Continue via koordinat mouse
+        // 2) click the <button> Continue via mouse coordinates
         const btn = await oauthPage
           .evaluate(() => {
             const btns = Array.from(document.querySelectorAll('button'));
@@ -1292,19 +1292,19 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
           .catch(() => null);
         if (btn) {
           try { await oauthPage.mouse.click(btn.x, btn.y); } catch (_) {}
-          log(account.email, 'OAUTH:TERMS', `klik mouse "${btn.text}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
+          log(account.email, 'OAUTH:TERMS', `mouse click "${btn.text}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
           await sleep(900);
           break;
         }
         await captureArtifacts(oauthPage, account.email, 'OAUTH_TERMS');
-        return { ok: false, detail: 'Tombol agree tidak ditemukan' };
+        return { ok: false, detail: 'Agree button not found' };
       }
       case 'OAUTH_CONSENT': {
-        // Google consent untuk OpenRouter: klik tombol <button> ASLI via koordinat mouse.
-        // clickByText tidak dipakai di sini (sering salah klik span judul paragraf).
+        // Google consent for OpenRouter: click the REAL <button> via mouse coordinates.
+        // clickByText is not used here (it often mis-clicks a paragraph title span).
         if (repeats >= 3) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_CONSENT');
-          return { ok: false, detail: 'Consent screen tidak bisa dilanjutkan' };
+          return { ok: false, detail: 'Consent screen could not be continued' };
         }
         const btn = await oauthPage
           .evaluate(() => {
@@ -1322,30 +1322,30 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
           .catch(() => null);
         if (btn) {
           try { await oauthPage.mouse.click(btn.x, btn.y); } catch (_) {}
-          log(account.email, 'OAUTH:CONSENT', `klik mouse "${btn.text}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
+          log(account.email, 'OAUTH:CONSENT', `mouse click "${btn.text}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
           await sleep(900);
           break;
         }
         await captureArtifacts(oauthPage, account.email, 'OAUTH_CONSENT');
-        return { ok: false, detail: 'Tombol Continue/Allow tidak ditemukan' };
+        return { ok: false, detail: 'Continue/Allow button not found' };
       }
       case 'UNKNOWN_PAGE':
       default: {
-        // interstisial Google (SetSID, /signin/oauth/id saat loading) — beri waktu lebih
+        // Google interstitial (SetSID, /signin/oauth/id while loading) — give it more time
         if (repeats >= 5) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_UNKNOWN');
-          return { ok: false, detail: 'Halaman OAuth tidak dikenali' };
+          return { ok: false, detail: 'OAuth page not recognized' };
         }
         await sleep(700);
         break;
       }
     }
   }
-  return { ok: true, detail: 'OAuth selesai / tab kembali ke OpenRouter' };
+  return { ok: true, detail: 'OAuth finished / tab back to OpenRouter' };
 }
 
-// State machine OpenRouter setelah login (onboarding + keys). Dipakai baik via
-// signup penuh maupun session yang sudah ada (profil persist).
+// OpenRouter state machine after login (onboarding + keys). Used both via
+// full signup and an existing session (persistent profile).
 async function runOrStateMachineOnly(page, email, account) {
   let lastOr = null;
   let orRepeats = 0;
@@ -1354,11 +1354,11 @@ async function runOrStateMachineOnly(page, email, account) {
   let lastMaskedCount = null;
   let keyCreated = false;
   let onboardingRounds = 0;
-  let authSignInRetries = 0; // budget: max 2 klik sign-in Google (password ditolak -> gagal cepat)
+  let authSignInRetries = 0; // budget: max 2 Google sign-in clicks (password rejected -> fail fast)
   let apiKeyResult = null;
   while (orSteps < CONFIG.maxStateMachineSteps) {
       orSteps++;
-      // tunggu spinner/loading hilang (maks 8s) sebelum classify — hindari salah state saat transit
+      // wait for the spinner/loading to disappear (max 8s) before classify — avoid a wrong state during transitions
       try {
         for (let lw = 0; lw < 26; lw++) {
           const loading = await page.evaluate(() => {
@@ -1381,51 +1381,51 @@ async function runOrStateMachineOnly(page, email, account) {
         case 'OR_HOME':
         case 'OR_AUTH_PAGE':
         case 'OR_AUTH_PAGE_NO_GOOGLE': {
-          // Session kadang expired saat navigate keys page -> sign-in muncul.
-          // Coba re-login: klik tombol Google di sign-in (session Google masih ada di profil),
-          // OAuth akan kilat lewat account chooser lalu balik ke keys.
+          // The session sometimes expires while navigating to the keys page -> sign-in appears.
+          // Try to re-login: click the Google button on sign-in (the Google session is still in the profile),
+          // OAuth will flash through the account chooser and return to keys.
           if (orRepeats >= 4 || authSignInRetries >= 2) {
             await captureArtifacts(page, email, 'OR_STUCK_AUTH');
             return {
               ok: false, stage: 'OR_AUTH',
               detail: authSignInRetries >= 2
-                ? 'Sign-in Google gagal 2x (password ditolak / diblokir Google) — skip agar tidak membuang waktu'
-                : 'Masih di halaman auth setelah OAuth (login gagal?)',
+                ? 'Google sign-in failed 2x (password rejected / blocked by Google) — skip to avoid wasting time'
+                : 'Still on the auth page after OAuth (login failed?)',
             };
           }
-          // Salah-klasifikasi home-terlogin-sebagai-auth (log 16:42): session sebenarnya
-          // valid. Sebelum menyerah, coba langsung ke /settings/keys — login valid akan
-          // klasifikasi sebagai KEYS_PAGE dan flow lanjut normal.
+          // Misclassification of a logged-in home as auth (log 16:42): the session is actually
+          // valid. Before giving up, try going straight to /settings/keys — a valid login will
+          // classify as KEYS_PAGE and the flow continues normally.
           if (orRepeats === 2) {
-            log(email, 'OR:OR_AUTH_PAGE', 'masih auth — coba langsung ke /settings/keys (cek session)...');
+            log(email, 'OR:OR_AUTH_PAGE', 'still auth — going straight to /settings/keys (session check)...');
             await page.goto(CONFIG.keysUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
             break;
           }
           if (orState === 'OR_AUTH_PAGE') {
             const g = await orClickGoogleButton(page).catch(() => null);
             if (g) {
-              log(email, `OR:${orState}`, `sign-in muncul — klik Google (${g}), tunggu OAuth kilat...`);
+              log(email, `OR:${orState}`, `sign-in appeared — click Google (${g}), waiting for quick OAuth...`);
               authSignInRetries++;
-              // tunggu balik ke openrouter.ai (maks 25s)
+              // wait for the return to openrouter.ai (max 25s)
               for (let w = 0; w < 40; w++) {
                 await sleep(400);
                 try {
                   const host = new URL(page.url()).hostname;
                   if (host === 'openrouter.ai' && !page.url().includes('/sign-in')) break;
                 } catch (_) {}
-                // popup OAuth bisa terbuka — tangani via tab list
+                // an OAuth popup may open — handle it via the tab list
                 if (w % 4 === 3) {
                   for (const p2 of await page.browser().pages()) {
                     try {
                       if (p2.url().includes('accounts.google.com')) {
                         const st = await runGoogleOauthStateMachine(p2, (account && account.email === email) ? account : { email, password: '' }, Date.now() + 25000).catch(() => null);
                         log(email, `OR:${orState}`, `oauth popup handled: ${JSON.stringify(st && st.detail ? st.detail : st)}`);
-                        // popup gagal (password ditolak/diblokir) -> hitung sebagai attempt sign-in,
-                        // jangan ulangi klik Google selamanya (log 20:12: 5 attempt sia-sia)
+                        // popup failed (password rejected/blocked) -> count it as a sign-in attempt,
+                        // don't keep clicking Google forever (log 20:12: 5 wasted attempts)
                         if (st && st.ok === false) authSignInRetries++;
                       }
-                      // OAuth sudah jelas gagal 2x -> hentikan loop tunggu (jangan
-                      // jalankan state machine lagi di popup yang stuck; log run4 20:50).
+                      // OAuth has clearly failed 2x -> stop the wait loop (don't
+                      // run the state machine again on a stuck popup; log run4 20:50).
                       if (authSignInRetries >= 2) { w = 999; break; }
                     } catch (_) {}
                   }
@@ -1443,7 +1443,7 @@ async function runOrStateMachineOnly(page, email, account) {
               }
               return null;
             }).catch(() => null);
-            if (c) log(email, `OR:${orState}`, `klik "${c}"`);
+            if (c) log(email, `OR:${orState}`, `click "${c}"`);
           }
           await sleep(400);
           break;
@@ -1453,23 +1453,23 @@ async function runOrStateMachineOnly(page, email, account) {
           onboardingRounds++;
           if (orRepeats >= 3 || onboardingRounds > 6) {
             await captureArtifacts(page, email, 'OR_ONBOARDING_STUCK');
-            return { ok: false, stage: 'ONBOARDING', detail: `Onboarding tidak selesai setelah ${onboardingRounds} ronde` };
+            return { ok: false, stage: 'ONBOARDING', detail: `Onboarding did not finish after ${onboardingRounds} rounds` };
           }
           const filled = await orHandleOnboarding(page, email);
-          log(email, 'OR:ONBOARDING', `isi form: ${JSON.stringify(filled)}`);
+          log(email, 'OR:ONBOARDING', `fill form: ${JSON.stringify(filled)}`);
           await sleep(250);
           const nxt = await orClickOnboardingNext(page);
-          log(email, 'OR:ONBOARDING', `klik next: "${nxt}"`);
+          log(email, 'OR:ONBOARDING', `click next: "${nxt}"`);
           await sleep(500);
           await captureArtifacts(page, email, `ONBOARDING_R${onboardingRounds}`, 'step_');
           break;
         }
 
         case 'OR_LEGAL_CONSENT': {
-          // Legal consent: centang "I agree..." lalu klik Continue (button, mouse)
+          // Legal consent: check "I agree..." then click Continue (button, mouse)
           if (orRepeats >= 5) {
             await captureArtifacts(page, email, 'OR_LEGAL_CONSENT_STUCK');
-            return { ok: false, stage: 'LEGAL_CONSENT', detail: 'Legal consent tidak bisa dilanjutkan' };
+            return { ok: false, stage: 'LEGAL_CONSENT', detail: 'Legal consent could not be continued' };
           }
           try {
             await page.evaluate(() => {
@@ -1496,20 +1496,20 @@ async function runOrStateMachineOnly(page, email, account) {
             .catch(() => null);
           if (btn) {
             try { await page.mouse.click(btn.x, btn.y); } catch (_) {}
-            log(email, 'OR:LEGAL_CONSENT', `klik mouse "${btn.text}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
+            log(email, 'OR:LEGAL_CONSENT', `mouse click "${btn.text}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
             await sleep(500);
             break;
           }
-          // tombol belum render? tunggu & retry dalam handler ini (maks 5x) — halaman berat
+          // button not rendered yet? wait & retry within this handler (max 5x) — heavy page
           await sleep(1000);
           if (orRepeats < 5) { break; }
           await captureArtifacts(page, email, 'OR_LEGAL_CONSENT_NOBTN');
-          return { ok: false, stage: 'LEGAL_CONSENT', detail: 'Tombol Continue legal consent tidak ditemukan' };
+          return { ok: false, stage: 'LEGAL_CONSENT', detail: 'Legal consent Continue button not found' };
         }
 
         case 'OR_WIZARD_KEY_STEP': {
-          // Wizard langkah "Your API Key": key dibuat otomatis (masked di sini).
-          // Full key tampil SEKALI di layar sebelumnya; simpan kalau ketemu, lalu Continue.
+          // Wizard step "Your API Key": the key is created automatically (masked here).
+          // The full key is shown ONCE on the previous screen; save it if found, then Continue.
           if (orRepeats >= 3) {
             await captureArtifacts(page, email, 'OR_WIZARD_STUCK');
             if (wizardFullKey) {
@@ -1517,7 +1517,7 @@ async function runOrStateMachineOnly(page, email, account) {
               appendApiKey(email, wizardFullKey);
               return { ok: true, stage: 'DONE', detail: 'key via wizard-fallback', apiKey: wizardFullKey };
             }
-            return { ok: false, stage: 'WIZARD', detail: 'Wizard "Your API Key" tidak bisa dilanjutkan' };
+            return { ok: false, stage: 'WIZARD', detail: 'Wizard "Your API Key" could not be continued' };
           }
           const fullHere = await page
             .evaluate(() => {
@@ -1525,8 +1525,8 @@ async function runOrStateMachineOnly(page, email, account) {
               return m ? m[0] : null;
             })
             .catch(() => null);
-          wizardFullKey = fullHere; // disimpan sementara; keys page akan delete+create baru
-          log(email, 'OR:WIZARD', fullHere ? 'wizard menampilkan full key (akan diganti di keys page)' : 'wizard menampilkan key masked');
+          wizardFullKey = fullHere; // held temporarily; the keys page will delete+create a new one
+          log(email, 'OR:WIZARD', fullHere ? 'wizard shows the full key (will be replaced on the keys page)' : 'wizard shows a masked key');
           const btn = await page
             .evaluate(() => {
               const btns = Array.from(document.querySelectorAll('button'));
@@ -1542,7 +1542,7 @@ async function runOrStateMachineOnly(page, email, account) {
             .catch(() => null);
           if (btn) {
             try { await page.mouse.click(btn.x, btn.y); } catch (_) {}
-            log(email, 'OR:WIZARD', `klik mouse "${btn.t}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
+            log(email, 'OR:WIZARD', `mouse click "${btn.t}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
             await sleep(600);
             break;
           }
@@ -1551,10 +1551,10 @@ async function runOrStateMachineOnly(page, email, account) {
         }
 
         case 'OR_WIZARD_PAYMENT_STEP': {
-          // step payment: klik "I'll do this later" (link/button di bawah)
+          // payment step: click "I'll do this later" (link/button at the bottom)
           if (orRepeats >= 3) {
             await captureArtifacts(page, email, 'OR_WIZARD_PAYMENT_STUCK');
-            return { ok: false, stage: 'WIZARD_PAYMENT', detail: 'Step payment wizard tidak bisa diskip' };
+            return { ok: false, stage: 'WIZARD_PAYMENT', detail: 'Wizard payment step could not be skipped' };
           }
           const btn = await page
             .evaluate(() => {
@@ -1571,7 +1571,7 @@ async function runOrStateMachineOnly(page, email, account) {
             .catch(() => null);
           if (btn) {
             try { await page.mouse.click(btn.x, btn.y); } catch (_) {}
-            log(email, 'OR:WIZARD', `klik skip payment "${btn.t}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
+            log(email, 'OR:WIZARD', `click skip payment "${btn.t}" @ (${Math.round(btn.x)},${Math.round(btn.y)})`);
             await sleep(600);
             break;
           }
@@ -1580,133 +1580,133 @@ async function runOrStateMachineOnly(page, email, account) {
         }
 
         case 'OR_KEYS_PAGE': {
-          // Salah-klasifikasi (log 20:12: sign-in page berlabel KEYS_PAGE): classifier memakai
-          // konten, bukan URL. Kalau URL jelas-jelas bukan /settings/keys, navigasi ke sana dulu.
+          // Misclassification (log 20:12: sign-in page labeled KEYS_PAGE): the classifier uses
+          // content, not the URL. If the URL is clearly not /settings/keys, navigate there first.
           {
             let host = '';
             let path = '';
             try { const u = new URL(page.url()); host = u.hostname; path = u.pathname; } catch (_) {}
-            // UI baru OR: keys page = /workspaces/<ws>/keys. /settings/keys di-redirect ke sana,
-            // jadi guard lama (!startsWith('/settings/keys')) loop navigasi 34x (log run6).
+            // New OR UI: keys page = /workspaces/<ws>/keys. /settings/keys redirects there,
+            // so the old guard (!startsWith('/settings/keys')) looped navigation 34x (log run6).
             const isKeysPath = path.startsWith('/settings/keys') || /\/keys\/?$/.test(path);
             if (host === 'openrouter.ai' && !isKeysPath) {
-              log(email, 'OR:OR_KEYS_PAGE', `URL bukan keys page (${path.slice(0, 40)}) -> navigate ke keys page`);
+              log(email, 'OR:OR_KEYS_PAGE', `URL is not the keys page (${path.slice(0, 40)}) -> navigating to the keys page`);
               await page.goto(CONFIG.keysUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
               break;
             }
           }
-          if (apiKeyResult) return { ok: true, stage: 'DONE', detail: 'key sudah didapat', apiKey: apiKeyResult.key };
+          if (apiKeyResult) return { ok: true, stage: 'DONE', detail: 'key already obtained', apiKey: apiKeyResult.key };
           if (keyCreated && orRepeats >= 4) {
-            // key dibuat tapi belum kebaca (dialog "Your new key" tidak muncul)
+            // key created but not yet read (the "Your new key" modal didn't appear)
             await captureArtifacts(page, email, 'OR_KEY_READ_FAIL');
-            return { ok: false, stage: 'KEY_READ', detail: 'Key dibuat tapi tidak terbaca' };
+            return { ok: false, stage: 'KEY_READ', detail: 'Key created but could not be read' };
           }
-          if (keyCreated) await sleep(400); // beri waktu dialog "Your new key" render
+          if (keyCreated) await sleep(400); // give the "Your new key" modal time to render
           if (!keyCreated) {
-            // ==== EDGE CASE BARU: API KEY SUDAH ADA -> DELETE SEMUA -> CREATE BARU ====
-            // Cek dari HALAMAN (bukan dari api_keys.txt), jadi tetap berfungsi walau txt kosong.
+            // ==== NEW EDGE CASE: API KEY ALREADY EXISTS -> DELETE ALL -> CREATE NEW ====
+            // Check the PAGE (not api_keys.txt), so it still works even if the txt is empty.
             await orWaitKeysReady(page);
             const det = await orDetectExistingKeys(page);
             if (det && (det.full || det.maskedCount > 0) && !det.noKeys) {
-              // progress tracking: kalau jumlah key TIDAK berkurang antar pass dan sudah
-              // beberapa repeats -> gagal. Kalau berkurang -> lanjut pass delete berikutnya.
+              // progress tracking: if the key count does NOT decrease between passes after
+              // several repeats -> fail. If it decreases -> continue with the next delete pass.
               const prev = lastMaskedCount;
               if (prev !== null && det.maskedCount >= prev && orRepeats >= 3) {
                 await captureArtifacts(page, email, 'OR_DELETE_FAIL');
-                return { ok: false, stage: 'DELETE_OLD_KEYS', detail: `Key lama tidak berkurang (sisa ${det.maskedCount} masked)` };
+                return { ok: false, stage: 'DELETE_OLD_KEYS', detail: `Old keys not decreasing (${det.maskedCount} masked remaining)` };
               }
               lastMaskedCount = det.maskedCount;
-              log(email, 'OR:KEYS', `key LAMA terdeteksi (full=${!!det.full}, masked=${det.maskedCount}, sebelumnya=${prev === null ? '-' : prev}) -> DELETE semua, lalu create baru`);
+              log(email, 'OR:KEYS', `OLD key detected (full=${!!det.full}, masked=${det.maskedCount}, previous=${prev === null ? '-' : prev}) -> DELETE all, then create new`);
               const n = await orDeleteAllKeys(page, email);
-              log(email, 'OR:KEYS', `delete key lama: ${n} tombol delete diklik`);
+              log(email, 'OR:KEYS', `delete old keys: ${n} delete buttons clicked`);
               await sleep(300);
-              break; // loop -> re-classify (jumlah key harus berkurang)
+              break; // loop -> re-classify (the key count must decrease)
             }
-            // ==== tidak ada key (atau sudah terhapus): buat key baru ====
-            log(email, 'OR:KEYS', 'di halaman keys, klik Create Key...');
+            // ==== no key (or already deleted): create a new key ====
+            log(email, 'OR:KEYS', 'on the keys page, clicking Create Key...');
             await sleep(250);
             const created = await orClickCreateKey(page);
             if (created === 'VERIFY_EMAIL_REQUIRED') {
               await captureArtifacts(page, email, 'OR_VERIFY_EMAIL');
-              return { ok: false, stage: 'EMAIL_VERIFY_REQUIRED', detail: 'OpenRouter minta verifikasi email untuk create key (kode dikirim ke email akun)' };
+              return { ok: false, stage: 'EMAIL_VERIFY_REQUIRED', detail: 'OpenRouter requires email verification to create a key (code sent to the account email)' };
             }
             if (created) {
-              log(email, 'OR:KEYS', `klik "${created}"`);
+              log(email, 'OR:KEYS', `click "${created}"`);
               keyCreated = true;
               await sleep(900);
             } else {
-              log(email, 'OR:KEYS', 'tombol create tidak ketemu, tunggu & retry');
+              log(email, 'OR:KEYS', 'create button not found, waiting & retrying');
               if (orRepeats >= 2) {
                 await captureArtifacts(page, email, 'OR_NO_CREATE_BTN');
-                return { ok: false, stage: 'CREATE_KEY', detail: 'Tombol Create API Key tidak ditemukan' };
+                return { ok: false, stage: 'CREATE_KEY', detail: 'Create API Key button not found' };
               }
               await sleep(800);
             }
           } else {
-            // key sudah dibuat: coba baca
+            // key already created: try to read it
             const read = await orReadKeyFromDom(page);
             if (read) {
               apiKeyResult = read;
-              log(email, 'OR:KEYS', `key terbaca (${read.source}): ${read.key.slice(0, 14)}...`);
+              log(email, 'OR:KEYS', `key read (${read.source}): ${read.key.slice(0, 14)}...`);
               appendApiKey(email, read.key);
               return { ok: true, stage: 'DONE', detail: `key via ${read.source}`, apiKey: read };
             }
-            // coba klik copy icon lalu baca clipboard
+            // try clicking the copy icon then read the clipboard
             const copyClicked = await orClickCopyKeyIcon(page);
             log(email, 'OR:KEYS', `copy icon: ${copyClicked}`);
             await sleep(800);
             const read2 = await orReadKeyFromDom(page);
             if (read2) {
               apiKeyResult = read2;
-              log(email, 'OR:KEYS', `key terbaca (${read2.source}): ${read2.key.slice(0, 14)}...`);
+              log(email, 'OR:KEYS', `key read (${read2.source}): ${read2.key.slice(0, 14)}...`);
               appendApiKey(email, read2.key);
               return { ok: true, stage: 'DONE', detail: `key via ${read2.source}`, apiKey: read2 };
             }
             if (orRepeats >= 3) {
               await captureArtifacts(page, email, 'OR_KEY_READ_FAIL');
-              return { ok: false, stage: 'KEY_READ', detail: 'Tidak bisa membaca key setelah copy' };
+              return { ok: false, stage: 'KEY_READ', detail: 'Could not read the key after copy' };
             }
           }
           break;
         }
 
         case 'OR_SETTINGS_PAGE': {
-          // login berhasil tapi bukan di keys -> navigasi ke keys
-          log(email, 'OR:SETTINGS', 'navigasi ke /settings/keys');
+          // login succeeded but not on keys -> navigate to keys
+          log(email, 'OR:SETTINGS', 'navigating to /settings/keys');
           await page.goto(CONFIG.keysUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
           await sleep(500);
           break;
         }
 
         case 'OR_CLOUDFLARE': {
-          // Cloudflare challenge: coba klik checkbox turnstile bila muncul
+          // Cloudflare challenge: try clicking the turnstile checkbox if it appears
           const solved = await maybeSolveTurnstile(page, email);
-          if (solved) log(email, 'OR:CLOUDFLARE', 'turnstile diklik');
+          if (solved) log(email, 'OR:CLOUDFLARE', 'turnstile clicked');
           if (orRepeats >= 4) {
             await captureArtifacts(page, email, 'OR_CLOUDFLARE_STUCK');
-            return { ok: false, stage: 'CLOUDFLARE', detail: 'Cloudflare challenge tidak lolos' };
+            return { ok: false, stage: 'CLOUDFLARE', detail: 'Cloudflare challenge not passed' };
           }
           await sleep(500);
           break;
         }
         case 'OR_NOT_OPENROUTER': {
-          // Tab utama nyasar ke Google (same-tab OAuth) — tangani dengan state machine Google,
-          // password asli dari account. Selesai -> balik openrouter, loop lanjut.
+          // The main tab strayed to Google (same-tab OAuth) — handle it with the Google state machine,
+          // real password from the account. Done -> back to openrouter, the loop continues.
           const u2 = page.url();
           if (u2.includes('accounts.google.com')) {
             if (orRepeats >= 8) {
               await captureArtifacts(page, email, 'OR_STUCK_GOOGLE');
-              return { ok: false, stage: 'OR_AUTH', detail: 'Nyangkut di Google terlalu lama' };
+              return { ok: false, stage: 'OR_AUTH', detail: 'Stuck on Google too long' };
             }
-            log(email, `OR:${orState}`, 'tab utama di Google — jalankan OAuth state machine (same-tab)');
+            log(email, `OR:${orState}`, 'main tab on Google — running the OAuth state machine (same-tab)');
             const gDone = await runGoogleOauthStateMachine(page, account || { email, password: '' }, Date.now() + 45000).catch(() => null);
             log(email, `OR:${orState}`, `same-tab oauth result: ${JSON.stringify(gDone && gDone.detail ? gDone.detail : gDone)}`);
-            // same-tab OAuth gagal (password ditolak / Google 500) -> hitung ke budget sign-in
-            // supaya akun gagal cepat, bukan loop 8x (log test run 3: 20:35).
+            // same-tab OAuth failed (password rejected / Google 500) -> count it against the sign-in budget
+            // so the account fails fast instead of looping 8x (log test run 3: 20:35).
             if (gDone && gDone.ok === false) {
               authSignInRetries++;
               if (authSignInRetries >= 2) {
-                return { ok: false, stage: 'OR_AUTH', detail: `OAuth Google gagal berulang (${(gDone && gDone.detail) || '?'}) — skip akun` };
+                return { ok: false, stage: 'OR_AUTH', detail: `Google OAuth failed repeatedly (${(gDone && gDone.detail) || '?'}) — skip account` };
               }
             }
           }
@@ -1715,8 +1715,8 @@ async function runOrStateMachineOnly(page, email, account) {
         }
         case 'OR_UNKNOWN':
         default: {
-          // evaluate bisa throw saat navigasi in-flight (race) -> URL Google harus
-          // diperlakukan sebagai OAuth same-tab, bukan UNKNOWN (log 16:47).
+          // evaluate can throw during in-flight navigation (race) -> a Google URL must be
+          // treated as same-tab OAuth, not UNKNOWN (log 16:47).
           {
             let cu = '';
             try { cu = page.url().toLowerCase(); } catch (_) {}
@@ -1726,7 +1726,7 @@ async function runOrStateMachineOnly(page, email, account) {
               if (gDone && gDone.ok === false) {
                 authSignInRetries++;
                 if (authSignInRetries >= 2) {
-                  return { ok: false, stage: 'OR_AUTH', detail: `OAuth Google gagal berulang (${(gDone && gDone.detail) || '?'}) — skip akun` };
+                  return { ok: false, stage: 'OR_AUTH', detail: `Google OAuth failed repeatedly (${(gDone && gDone.detail) || '?'}) — skip account` };
                 }
               }
               await sleep(400);
@@ -1735,7 +1735,7 @@ async function runOrStateMachineOnly(page, email, account) {
           }
           if (orRepeats >= 3) {
             await captureArtifacts(page, email, 'OR_UNKNOWN_STUCK');
-            return { ok: false, stage: 'OR_UNKNOWN', detail: `Halaman OpenRouter tidak dikenali: ${page.url().slice(0, 80)}` };
+            return { ok: false, stage: 'OR_UNKNOWN', detail: `Unrecognized OpenRouter page: ${page.url().slice(0, 80)}` };
           }
           await sleep(800);
           break;
@@ -1744,17 +1744,17 @@ async function runOrStateMachineOnly(page, email, account) {
     }
 
   await captureArtifacts(page, email, 'OR_MAX_STEPS');
-  return { ok: false, stage: 'MAX_STEPS', detail: `Melebihi ${CONFIG.maxStateMachineSteps} langkah`, bail: true };
+  return { ok: false, stage: 'MAX_STEPS', detail: `Exceeded ${CONFIG.maxStateMachineSteps} steps`, bail: true };
 }
 
-// ===================== FLOW UTAMA =====================
+// ===================== MAIN FLOW =====================
 
 async function maybeSolveTurnstile(page, email) {
-  // Cloudflare Turnstile via Clerk: container div#clerk-captcha berisi iframe
-  // challenges.cloudflare.com dengan checkbox "Verify you are human".
-  // Strategi: bounding box container/iframe lalu klik area checkbox (kiri-tengah).
+  // Cloudflare Turnstile via Clerk: the div#clerk-captcha container holds an iframe
+  // from challenges.cloudflare.com with a "Verify you are human" checkbox.
+  // Strategy: get the container/iframe bounding box then click the checkbox area (left-center).
   try {
-    // 1) frame turnstile langsung
+    // 1) the turnstile frame directly
     for (const f of page.frames()) {
       if (!f.url().includes('challenges.cloudflare.com')) continue;
       const el = await f.frameElement();
@@ -1764,10 +1764,10 @@ async function maybeSolveTurnstile(page, email) {
       const x = box.x + Math.min(30, box.width / 4);
       const y = box.y + box.height / 2;
       await page.mouse.click(x, y);
-      log(email, 'TURNSTILE', `klik checkbox iframe @ (${Math.round(x)},${Math.round(y)}) box=${Math.round(box.width)}x${Math.round(box.height)}`);
+      log(email, 'TURNSTILE', `click checkbox iframe @ (${Math.round(x)},${Math.round(y)}) box=${Math.round(box.width)}x${Math.round(box.height)}`);
       return true;
     }
-    // 2) container #clerk-captcha (bounding box-nya)
+    // 2) the #clerk-captcha container (its bounding box)
     const cont = await page.$('#clerk-captcha');
     if (cont) {
       const box = await cont.boundingBox();
@@ -1775,7 +1775,7 @@ async function maybeSolveTurnstile(page, email) {
         const x = box.x + Math.min(30, box.width / 4);
         const y = box.y + box.height / 2;
         await page.mouse.click(x, y);
-        log(email, 'TURNSTILE', `klik container @ (${Math.round(x)},${Math.round(y)}) box=${Math.round(box.width)}x${Math.round(box.height)}`);
+        log(email, 'TURNSTILE', `click container @ (${Math.round(x)},${Math.round(y)}) box=${Math.round(box.width)}x${Math.round(box.height)}`);
         return true;
       }
     }
@@ -1787,7 +1787,7 @@ async function maybeSolveTurnstile(page, email) {
         const x = box.x + Math.min(30, box.width / 4);
         const y = box.y + box.height / 2;
         await page.mouse.click(x, y);
-        log(email, 'TURNSTILE', `klik .cf-turnstile @ (${Math.round(x)},${Math.round(y)}) box=${Math.round(box.width)}x${Math.round(box.height)}`);
+        log(email, 'TURNSTILE', `click .cf-turnstile @ (${Math.round(x)},${Math.round(y)}) box=${Math.round(box.width)}x${Math.round(box.height)}`);
         return true;
       }
     }
@@ -1798,9 +1798,9 @@ async function maybeSolveTurnstile(page, email) {
 }
 
 async function hasTurnstile(page) {
-  // Hanya TRUE jika widget turnstile BENAR-BENAR tampil (visible container
-  // dengan ukuran nyata). Elemen #clerk-captcha / hidden input selalu ada
-  // di markup Clerk walau widget belum aktif -> false positive jika tanpa cek visibilitas.
+  // Only TRUE if the turnstile widget is REALLY displayed (a visible container
+  // with a real size). The #clerk-captcha element / hidden input is always present
+  // in Clerk markup even when the widget is inactive -> false positive without a visibility check.
   try {
     const vis = await page.evaluate(() => {
       const visEl = (el) => {
@@ -1809,7 +1809,7 @@ async function hasTurnstile(page) {
         const s = window.getComputedStyle(el);
         return r.width > 20 && r.height > 20 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
       };
-      // container Clerk captcha yang benar-benar tampil
+      // the Clerk captcha container that is actually displayed
       const cc = document.querySelector('#clerk-captcha');
       if (cc && visEl(cc)) return 'clerk-captcha';
       const cf = document.querySelector('.cf-turnstile, [data-sitekey]');
@@ -1826,11 +1826,11 @@ async function hasTurnstile(page) {
 
 async function processAccount(account, idx, total) {
   const email = account.email;
-  log(email, 'START', `akun ${idx + 1}/${total}`);
+  log(email, 'START', `account ${idx + 1}/${total}`);
 
-  // Profil Chrome terpisah per akun (bukan incognito): Google menolak
-  // sign-in dari automation di incognito context ("may not be secure"),
-  // tapi profil persisten + stealth lolos lebih sering.
+  // A separate Chrome profile per account (not incognito): Google rejects
+  // sign-in from automation in an incognito context ("may not be secure"),
+  // but a persistent profile + stealth passes more often.
   const profileDir = path.join('chrome_profiles', safeName(email));
   try { fs.mkdirSync(profileDir, { recursive: true }); } catch (_) {}
   const launchOpts = {
@@ -1838,28 +1838,28 @@ async function processAccount(account, idx, total) {
     args: [...LAUNCH_ARGS],
     defaultViewport: null,
     userDataDir: profileDir,
-    protocolTimeout: 20000, // evaluate/click yang hang 20 dtk -> throw, bukan gantung selamanya
+    protocolTimeout: 20000, // an evaluate/click hanging 20 s -> throws instead of hanging forever
   };
   const exe = resolveChromeExecutable();
   if (exe) launchOpts.executablePath = exe;
   else launchOpts.channel = 'chrome';
-  // HEADLESS: UA headless mengandung 'HeadlessChrome' -> Google menolak login (500).
-  // UA string di-override per-page ke versi headful di bawah.
+  // HEADLESS: the headless UA contains 'HeadlessChrome' -> Google rejects login (500).
+  // The UA string is overridden per-page to the headful version below.
 
   const browser = await puppeteer.launch(launchOpts);
   let page = null;
   let apiKeyResult = null;
 
   try {
-    // konteks default (profil persisten) — bukan incognito
+    // the default context (persistent profile) — not incognito
     const context = browser.defaultBrowserContext();
     try {
       await context.overridePermissions('https://openrouter.ai', ['clipboard-read', 'clipboard-write']);
     } catch (_) {}
     const pages = await browser.pages();
     page = pages.length ? pages[0] : await context.newPage();
-    // Judul jendela = akun yang sedang diproses (mudah dibedakan saat multi-run)
-    // UA headful: 'HeadlessChrome/x' -> 'Chrome/x' (string lain identik).
+    // Window title = the account being processed (easy to tell apart during multi-runs)
+    // Headful UA: 'HeadlessChrome/x' -> 'Chrome/x' (the rest of the string identical).
     try {
       const cur = await page.evaluate(() => navigator.userAgent);
       if (/HeadlessChrome/i.test(cur)) {
@@ -1880,21 +1880,21 @@ async function processAccount(account, idx, total) {
     }, `BOT ${shortMail} (${idx + 1}/${total})`);
 
     // ---- STEP 1: homepage ----
-    log(email, 'STEP1', `buka ${CONFIG.homeUrl}`);
+    log(email, 'STEP1', `open ${CONFIG.homeUrl}`);
     await page.goto(CONFIG.homeUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch((e) => {
       log(email, 'NAV_WARN', e.message);
     });
     await sleep(300);
     await captureArtifacts(page, email, 'HOME');
 
-    // ---- STEP 1.5: cek apakah SUDAH LOGIN (profil persist) -> skip langsung ke state machine OR ----
+    // ---- STEP 1.5: check if ALREADY LOGGED IN (persistent profile) -> skip straight to the OR state machine ----
     let preState = await classifyOpenRouter(page).catch(() => null);
     for (let pc = 0; pc < 3 && !preState; pc++) {
-      await sleep(400); // home SPA belum selesai render — jangan memutuskan rute dari DOM setengah jadi
+      await sleep(400); // the home SPA hasn't finished rendering — don't decide the route from a half-built DOM
       preState = await classifyOpenRouter(page).catch(() => null);
     }
     const preLoginStates = ['OR_KEYS_PAGE', 'OR_SETTINGS_PAGE', 'OR_ONBOARDING_QUESTIONS', 'OR_LEGAL_CONSENT', 'OR_WIZARD_KEY_STEP', 'OR_WIZARD_PAYMENT_STEP'];
-    // OR_HOME juga menandakan login jika home TIDAK menawarkan "Sign Up" (header user menu).
+    // OR_HOME also signals login if home does NOT offer "Sign Up" (header user menu).
     const homeNoSignup = preState === 'OR_HOME' && await page
       .evaluate(() => {
         const txt = (document.body.innerText || '').toLowerCase();
@@ -1902,13 +1902,13 @@ async function processAccount(account, idx, total) {
       })
       .catch(() => false);
     if (preLoginStates.includes(preState) || homeNoSignup) {
-      log(email, 'STEP1.5', `sudah login terdeteksi (${preState}) — skip signup, langsung state machine OR`);
+      log(email, 'STEP1.5', `already logged in detected (${preState}) — skip signup, straight to the OR state machine`);
       const done = await runOrStateMachineOnly(page, email, account);
       return done;
     }
 
-    // ---- STEP 2: klik Sign Up di header ----
-    log(email, 'STEP2', 'cari klik Sign Up');
+    // ---- STEP 2: click Sign Up in the header ----
+    log(email, 'STEP2', 'find and click Sign Up');
     let clicked = null;
     for (let attempt = 0; attempt < 8 && !clicked; attempt++) {
       clicked = await page.evaluate(() => {
@@ -1924,30 +1924,30 @@ async function processAccount(account, idx, total) {
     }
 
     if (!clicked) {
-      // Kemungkinan sudah dihalaman auth via /auth
-      log(email, 'STEP2', 'Sign Up tidak ketemu di home, langsung ke /auth');
+      // Probably already on the auth page via /auth
+      log(email, 'STEP2', 'Sign Up not found on home, going straight to /auth');
       await page.goto('https://openrouter.ai/auth', { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
       await sleep(800);
     } else {
-      log(email, 'STEP2', `klik "${clicked}"`);
+      log(email, 'STEP2', `click "${clicked}"`);
       await sleep(300);
     }
 
-    // ---- STEP 3: klik tombol Google di halaman auth ----
+    // ---- STEP 3: click the Google button on the auth page ----
     let gAttempts = 0;
     let gClicked = null;
     let authReloaded = false;
     while (gAttempts < 8 && !gClicked) {
-      // kalau 5x percobaan gagal, reload halaman auth sekali (kadang Clerk tidak render)
+      // if 5 attempts fail, reload the auth page once (sometimes Clerk doesn't render)
       if (gAttempts === 5 && !authReloaded) {
         authReloaded = true;
-        log(email, 'STEP3', 'reload halaman auth (tombol Google tidak muncul)...');
+        log(email, 'STEP3', 'reloading the auth page (Google button not appearing)...');
         await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {});
         await sleep(700);
       }
-      // Turnstile bisa muncul SEBELUM klik Google (di dalam modal sign up)
+      // Turnstile can appear BEFORE clicking Google (inside the sign-up modal)
       if (await hasTurnstile(page)) {
-        log(email, 'STEP3', 'Turnstile terdeteksi sebelum klik Google, coba selesaikan...');
+        log(email, 'STEP3', 'Turnstile detected before clicking Google, trying to solve it...');
         let solved = false;
         for (let t = 0; t < 4 && !solved; t++) {
           solved = await maybeSolveTurnstile(page, email);
@@ -1955,25 +1955,25 @@ async function processAccount(account, idx, total) {
         }
         if (!solved) {
           await captureArtifacts(page, email, 'TURNSTILE_PRE_GOOGLE');
-          return { ok: false, stage: 'TURNSTILE', detail: 'Turnstile muncul di halaman auth dan tidak bisa diselesaikan' };
+          return { ok: false, stage: 'TURNSTILE', detail: 'Turnstile appeared on the auth page and could not be solved' };
         }
         await sleep(500);
       }
       gClicked = await orClickGoogleButton(page);
       if (!gClicked) {
-        log(email, 'STEP3', `tombol Google belum ada (attempt ${gAttempts + 1}), tunggu...`);
+        log(email, 'STEP3', `Google button not present yet (attempt ${gAttempts + 1}), waiting...`);
         await sleep(700);
       }
       gAttempts++;
     }
     if (!gClicked) {
       await captureArtifacts(page, email, 'NO_GOOGLE_BTN');
-      return { ok: false, stage: 'GOOGLE_BTN', detail: 'Tombol Google tidak ditemukan di halaman auth' };
+      return { ok: false, stage: 'GOOGLE_BTN', detail: 'Google button not found on the auth page' };
     }
-    log(email, 'STEP3', `klik Google via ${gClicked}`);
+    log(email, 'STEP3', `click Google via ${gClicked}`);
     await sleep(400);
 
-    // ---- STEP 4: temukan halaman Google OAuth (popup / redirect), tangani Turnstile ----
+    // ---- STEP 4: find the Google OAuth page (popup / redirect), handle Turnstile ----
     let oauthPage = null;
     const findDeadline = Date.now() + 12000;
     while (Date.now() < findDeadline && !oauthPage) {
@@ -1985,72 +1985,72 @@ async function processAccount(account, idx, total) {
       }
       if (!oauthPage && page.url().includes('accounts.google.com')) oauthPage = page;
       if (!oauthPage) {
-        // Clerk redirect same-tab perlu waktu. Jangan buru-buru: biarkan loop polling yang
-        // menemukan URL berubah (popup ATAU tab utama ke google ATAU sso-callback kilat).
+        // The Clerk same-tab redirect takes time. Don't rush: let the polling loop
+        // discover the URL change (popup OR main tab to google OR a quick sso-callback).
         try {
           const mu = page.url().toLowerCase();
           if (mu.includes('sso-callback')) {
-            // OAuth kilat selesai (session google masih ada) — langsung anggap selesai
-            log(email, 'STEP4', 'sso-callback kilat terdeteksi — OAuth selesai tanpa popup');
+            // Quick OAuth finished (google session still present) — immediately assume done
+            log(email, 'STEP4', 'quick sso-callback detected — OAuth finished without a popup');
             oauthPage = page;
             break;
           }
         } catch (_) {}
       }
       if (!oauthPage) {
-        // Turnstile bisa muncul SETELAH klik Google (sebelum redirect ke Google)
+        // Turnstile can appear AFTER clicking Google (before the redirect to Google)
         if (await hasTurnstile(page)) {
           const solved = await maybeSolveTurnstile(page, email);
-          if (solved) log(email, 'STEP4', 'Turnstile setelah klik Google: diklik');
+          if (solved) log(email, 'STEP4', 'Turnstile after clicking Google: clicked');
         }
         await sleep(400);
       }
     }
     if (!oauthPage) {
-      // Tidak ada popup — cek tab utama: bisa jadi OAuth same-tab, ATAU langsung masuk
-      // ke halaman sign-up OpenRouter (legal consent) karena session Google masih ada.
+      // No popup — check the main tab: it may be same-tab OAuth, OR it went straight
+      // to the OpenRouter sign-up page (legal consent) because the Google session still exists.
       const mainUrl = page.url().toLowerCase();
       if (mainUrl.includes('accounts.google.com')) {
         oauthPage = page;
-        log(email, 'STEP4', 'OAuth terjadi di tab utama (same-tab)');
+        log(email, 'STEP4', 'OAuth happened in the main tab (same-tab)');
       } else if (mainUrl.startsWith('https://openrouter.ai') || mainUrl.startsWith('http://openrouter.ai') || mainUrl.includes('openrouter.ai/#') || mainUrl.includes('openrouter.ai/')) {
-        log(email, 'STEP4', 'Tidak ada popup OAuth; lanjut ke state machine OpenRouter (session Google mungkin masih ada)');
+        log(email, 'STEP4', 'No OAuth popup; continuing to the OpenRouter state machine (Google session may still exist)');
         const r = await runGoogleOauthStateMachine(page, account, Date.now() + 20000);
         log(email, 'STEP4', `pre-OR state machine: ${JSON.stringify(r && r.detail ? r.detail : r)}`);
-        // lanjut ke STEP6 (bukan OAuth penuh)
+        // continue to STEP6 (not full OAuth)
         oauthPage = page;
       } else {
         await captureArtifacts(page, email, 'NO_OAUTH_PAGE');
-        return { ok: false, stage: 'OAUTH_PAGE', detail: 'Halaman Google OAuth tidak muncul' };
+        return { ok: false, stage: 'OAUTH_PAGE', detail: 'Google OAuth page did not appear' };
       }
     }
     if (oauthPage !== page) { try { await oauthPage.bringToFront(); } catch (_) {} }
     log(email, 'STEP4', `OAuth page: ${oauthPage.url().slice(0, 70)}`);
 
-    // ---- STEP 5: jalankan OAuth state machine ----
+    // ---- STEP 5: run the OAuth state machine ----
     const oauthDeadline = Date.now() + CONFIG.oauthTimeoutMs;
     const oauthResult = await runGoogleOauthStateMachine(oauthPage, account, oauthDeadline);
     await captureArtifacts(oauthPage, email, 'OAUTH_END', 'step_');
     if (!oauthResult.ok) {
       return { ok: false, stage: 'OAUTH', detail: oauthResult.detail };
     }
-    log(email, 'STEP5', 'OAuth OK, kembali ke OpenRouter');
+    log(email, 'STEP5', 'OAuth OK, back to OpenRouter');
 
-    // kembali ke main page
+    // back to the main page
     if (oauthPage !== page) { try { await page.bringToFront(); } catch (_) {} }
 
-    // ---- STEP 6: tunggu redirect/verifikasi selesai di openrouter.ai ----
-    // Kalau TAB UTAMA masih di Google (chooser/consent di tab utama), selesaikan dulu.
+    // ---- STEP 6: wait for the redirect/verification to finish on openrouter.ai ----
+    // If the MAIN TAB is still on Google (chooser/consent in the main tab), finish it first.
     for (let round = 0; round < 3; round++) {
       let mainU = '';
       try { mainU = page.url().toLowerCase(); } catch (_) {}
       if (!mainU.includes('accounts.google')) break;
-      log(email, 'STEP6', `tab utama masih di Google (${mainU.slice(0, 60)}), selesaikan...`);
+      log(email, 'STEP6', `main tab still on Google (${mainU.slice(0, 60)}), finishing it...`);
       const gPage = (oauthPage && !oauthPage.isClosed() && (oauthPage.url() || '').includes('accounts.google')) ? oauthPage : page;
       const extra = await runGoogleOauthStateMachine(gPage, account, Date.now() + 60000);
       if (!extra.ok) {
         await captureArtifacts(page, email, 'STEP6_GOOGLE_STUCK');
-        return { ok: false, stage: 'OAUTH', detail: `Step6 masih di Google: ${extra.detail}` };
+        return { ok: false, stage: 'OAUTH', detail: `Step6 still on Google: ${extra.detail}` };
       }
       await sleep(400);
     }
@@ -2062,7 +2062,7 @@ async function processAccount(account, idx, total) {
       try { host = new URL(page.url()).hostname; } catch (_) {}
       if (host === 'openrouter.ai') break;
     }
-    log(email, 'STEP6', `URL setelah OAuth: ${settledUrl.slice(0, 80)}`);
+    log(email, 'STEP6', `URL after OAuth: ${settledUrl.slice(0, 80)}`);
 
     // ---- STEP 7: state machine OpenRouter (onboarding + keys) ----
     const orDone = await runOrStateMachineOnly(page, email, account);
@@ -2077,7 +2077,7 @@ async function processAccount(account, idx, total) {
 
 // ===================== MAIN =====================
 
-// Tangkap crash yang tidak tertangani try/catch (unhandledRejection membunuh Node 15+)
+// Catch crashes not handled by try/catch (unhandledRejection kills Node 15+)
 process.on('unhandledRejection', (e) => {
   log('MAIN', 'UNHANDLED_REJECTION', (e && (e.stack || e.message)) || String(e));
 });
@@ -2088,25 +2088,25 @@ process.on('uncaughtException', (e) => {
 (async () => {
   ensureDirs();
   if (!resolveChromeExecutable() && !process.env.CHROME_PATH) {
-    log('MAIN', 'FATAL', 'Chrome tidak ditemukan. Install Chrome atau set CHROME_PATH.');
+    log('MAIN', 'FATAL', 'Chrome not found. Install Chrome or set CHROME_PATH.');
     process.exit(1);
   }
   const all = readAccounts();
   if (!all.length) {
-    log('MAIN', 'FATAL', 'account.txt kosong. Format: email|password per baris.');
+    log('MAIN', 'FATAL', 'account.txt is empty. Format: email|password per line.');
     process.exit(1);
   }
   const done = loadExistingEmails();
   let accounts = all.filter((a) => !done.has(a.email.toLowerCase()));
   if (!accounts.length) {
-    log('MAIN', 'INFO', 'Semua akun sudah punya API key.');
+    log('MAIN', 'INFO', 'All accounts already have an API key.');
     process.exit(0);
   }
   if (process.env.MAX_ACCOUNTS) {
     const n = parseInt(process.env.MAX_ACCOUNTS, 10);
     if (n > 0 && n < accounts.length) accounts = accounts.slice(0, n);
   }
-  log('MAIN', 'INFO', `${accounts.length}/${all.length} akun akan diproses`);
+  log('MAIN', 'INFO', `${accounts.length}/${all.length} accounts to be processed`);
 
   let success = 0;
   let fail = 0;
@@ -2123,7 +2123,7 @@ process.on('uncaughtException', (e) => {
     }
     if (i < accounts.length - 1) await sleep(rand(...CONFIG.interAccountDelayMs));
   }
-  log('MAIN', 'SUMMARY', `selesai: ${success} sukses, ${fail} gagal dari ${accounts.length} akun`);
+  log('MAIN', 'SUMMARY', `done: ${success} succeeded, ${fail} failed of ${accounts.length} accounts`);
   process.exit(0);
 })().catch((e) => {
   log('MAIN', 'FATAL', e && e.message ? e.message : String(e));
