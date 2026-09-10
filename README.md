@@ -94,12 +94,6 @@ Build it yourself at any time:
 npm run build:exe
 ```
 
-### Build the .exe launcher (optional, Windows)
-
-```bash
-npm run build:exe
-```
-
 ## Usage
 
 1. Add your accounts to `account.txt` (copy from `account.txt.example`):
