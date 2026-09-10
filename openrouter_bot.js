@@ -198,10 +198,6 @@ async function classifyOpenRouter(page) {
         } catch (_) { return false; }
       };
 
-      // Already logged in on keys page: create key button / keys table present
-      if (url.includes('/settings/keys') || url.includes('/keys')) return 'OR_KEYS_PAGE';
-      if (url.includes('/settings') && !url.includes('sign')) return 'OR_SETTINGS_PAGE';
-
       // Legal consent (sign-up/continue): "I agree to the Terms of Service..."
       if (
         url.includes('/sign-up') ||
@@ -270,6 +266,12 @@ async function classifyOpenRouter(page) {
         (has('iframe[src*="challenges.cloudflare.com"]') && !txt.includes('sign up'))
       ) return 'OR_CLOUDFLARE';
 
+      // URL fallbacks LAST — text signals are stronger: the first-run onboarding wizard
+      // ("How will you be using OpenRouter?") renders AT the /keys URL and must classify
+      // as OR_ONBOARDING_QUESTIONS, never as OR_KEYS_PAGE (delete/create would misfire).
+      if (url.includes('/settings/keys') || url.includes('/keys')) return 'OR_KEYS_PAGE';
+      if (url.includes('/settings') && !url.includes('sign')) return 'OR_SETTINGS_PAGE';
+
       return null;
     })
     .catch(() => null);
@@ -326,6 +328,15 @@ async function classifyGoogleOauth(page) {
         txt.includes('server error') ||
         (txt.includes('500') && txt.includes('error'))
       ) return 'GOOGLE_ERROR';
+
+      // "Sign in to Chrome?" sync prompt on the SetSID page (fresh Chrome profiles).
+      // It has no email/password input and sits on the setsid path, so without this
+      // check it fell into LOADING_INTERSTITIAL and waited forever (log 08:34 ZakyTa19).
+      if (
+        (txt.includes('sign in to chrome') || txt.includes('set up a work profile') ||
+         txt.includes('use chrome without an account') || txt.includes('continue as ')) &&
+        !hasEmail && !hasPwd
+      ) return 'CHROME_SIGNIN_PROMPT';
 
       // Google interstitial still loading (signin/oauth/id etc.) -> wait, don't act
       if (
@@ -537,10 +548,19 @@ async function orHandleOnboarding(page, email) {
       // d) First radio choice — but PREFERENCE: the "Individual" card (new OpenRouter wizard)
       const radios = Array.from(document.querySelectorAll('input[type="radio"]'));
       const seenGroups = new Set();
-      const cards = Array.from(document.querySelectorAll('[role="radio"], label, div, button')).filter((el) => {
+      // Prefer the radio CARD itself ([role=radio]): the generic filter can match the
+      // radiogroup CONTAINER first (document order = parent before child) and .click()
+      // on the container never triggers the card's React handler.
+      let cards = Array.from(document.querySelectorAll('[role="radio"]')).filter((el) => {
         const t = (el.innerText || '').trim().toLowerCase();
         return t === 'individual' || t.startsWith('individual\n');
       });
+      if (!cards.length) {
+        cards = Array.from(document.querySelectorAll('label, div, button')).filter((el) => {
+          const t = (el.innerText || '').trim().toLowerCase();
+          return t === 'individual' || t.startsWith('individual\n');
+        });
+      }
       if (cards.length) {
         try { cards[0].click(); out.push('card=individual'); } catch (_) {}
         // make sure no other radio needs clicking
@@ -1099,6 +1119,20 @@ async function runGoogleOauthStateMachine(oauthPage, account, deadline) {
     log(account.email, `OAUTH:${state}`, `repeats=${repeats} url=${oauthPage.url().slice(0, 80)}`);
 
     switch (state) {
+      case 'CHROME_SIGNIN_PROMPT': {
+        if (repeats >= 3) {
+          await captureArtifacts(oauthPage, account.email, 'OAUTH_CHROME_SIGNIN');
+          return { ok: false, detail: 'Sign-in-to-Chrome prompt could not be dismissed' };
+        }
+        const clicked = await clickByText(oauthPage, ['use chrome without an account', 'lanjutkan tanpa akun', 'no thanks', 'not now']);
+        log(account.email, 'OAUTH:CHROME_SIGNIN', `dismiss sync prompt: "${clicked}"`);
+        if (!clicked) {
+          await sleep(600);
+          break;
+        }
+        await sleep(900);
+        break;
+      }
       case 'EMAIL_INPUT': {
         if (repeats >= 1 || emailDone) {
           await captureArtifacts(oauthPage, account.email, 'OAUTH_EMAIL_LOOP');
@@ -1451,7 +1485,7 @@ async function runOrStateMachineOnly(page, email, account) {
 
         case 'OR_ONBOARDING_QUESTIONS': {
           onboardingRounds++;
-          if (orRepeats >= 3 || onboardingRounds > 6) {
+          if (orRepeats >= 6 || onboardingRounds > 10) {
             await captureArtifacts(page, email, 'OR_ONBOARDING_STUCK');
             return { ok: false, stage: 'ONBOARDING', detail: `Onboarding did not finish after ${onboardingRounds} rounds` };
           }
@@ -1592,6 +1626,30 @@ async function runOrStateMachineOnly(page, email, account) {
             if (host === 'openrouter.ai' && !isKeysPath) {
               log(email, 'OR:OR_KEYS_PAGE', `URL is not the keys page (${path.slice(0, 40)}) -> navigating to the keys page`);
               await page.goto(CONFIG.keysUrl, { waitUntil: 'domcontentloaded', timeout: CONFIG.gotoTimeoutMs }).catch(() => {});
+              break;
+            }
+          }
+          // DEFENSE: the first-run onboarding wizard renders AT the /keys URL. If the
+          // classifier still routes here with the wizard visible, click through it now —
+          // otherwise the delete/create flow misfires into wizard elements.
+          {
+            const wiz = await page
+              .evaluate(() => {
+                const rg = document.querySelector('[role="radiogroup"][aria-label*="how will you be using"]');
+                if (!rg) return null;
+                const card = Array.from(rg.querySelectorAll('[role="radio"]')).find((el) =>
+                  (el.innerText || '').trim().toLowerCase().startsWith('individual')
+                );
+                if (card) { try { card.click(); } catch (_) {} }
+                return true;
+              })
+              .catch(() => null);
+            if (wiz) {
+              log(email, 'OR:KEYS', 'onboarding wizard visible on keys page -> click Individual + Next');
+              await sleep(300);
+              const nx = await orClickOnboardingNext(page);
+              log(email, 'OR:KEYS', `wizard next: "${nx}"`);
+              await sleep(600);
               break;
             }
           }
